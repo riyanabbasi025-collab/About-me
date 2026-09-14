@@ -6,15 +6,39 @@
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
 
-  const base = clone(window.LUCIAN_DATA || {});
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) {}
-  const data = saved || base;
+  let data = clone(saved || window.LUCIAN_DATA || {});
   data.profile ||= {};
   data.skills ||= [];
   data.games ||= [];
   data.anime ||= [];
   data.links ||= [];
+
+  async function loadPublishedData() {
+    try {
+      const response = await fetch(`data.js?cb=${Date.now()}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`data.js request failed: ${response.status}`);
+      const source = await response.text();
+      const match = source.match(/window\.LUCIAN_DATA\s*=\s*([\s\S]*?)\s*;?\s*$/);
+      if (!match) throw new Error('Published data.js format is invalid');
+      const parsed = JSON.parse(match[1].trim().replace(/;\s*$/, ''));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+      console.warn('Lucian Vex: fresh published data could not be loaded; using bundled data.', error);
+      return clone(window.LUCIAN_DATA || {});
+    }
+  }
+
+  function normalizeData(source) {
+    const value = clone(source || {});
+    value.profile ||= {};
+    value.skills ||= [];
+    value.games ||= [];
+    value.anime ||= [];
+    value.links ||= [];
+    return value;
+  }
 
   const modal = $('#modal');
   const content = $('#modal-content');
@@ -104,6 +128,11 @@
     $('#profile-bio').textContent = p.bio || '';
     $('#discord').textContent = p.discord || '';
     $('#email').textContent = p.email || '';
+    const contact = p.contact || {};
+    const contactTitle = $('#contact-title');
+    const contactText = $('#contact-text');
+    if (contactTitle) contactTitle.innerHTML = esc(contact.title || 'Contact') + ' <i>me</i>';
+    if (contactText) contactText.textContent = contact.text || 'Open to conversations, collaborations, games, projects, or just a good conversation.';
     $('#stat-skills').textContent = data.skills.length;
     $('#stat-games').textContent = data.games.length;
     $('#stat-anime').textContent = data.anime.length;
@@ -250,6 +279,20 @@
         <div class="form-field"><label>PROFILE TAGS</label><input id="f-profile-chips" value="${esc(chips.join(' • '))}" placeholder="SELF-TAUGHT • CREATIVE • GAMER • BUILDER"><p class="muted-note">Separate tags with •</p></div>
         <button class="btn primary form-submit" data-save-manager="profile" data-index="-1" type="button">SAVE ABOUT ME</button>`;
     }
+    if (type === 'contact') {
+      const contact = data.profile.contact || {};
+      html = `
+        <p class="eyebrow">CONTACT MANAGER</p><h2 id="modal-title">Edit Contact Me</h2>
+        <p class="muted-note">Change the public contact heading, message, Discord handle and email address.</p>
+        <div class="form-field"><label>HEADING</label><input id="f-contact-title" value="${esc(contact.title || 'Contact')}" placeholder="Contact"></div>
+        <div class="form-field"><label>MESSAGE</label><textarea id="f-contact-text" placeholder="Your contact message">${esc(contact.text || 'Open to conversations, collaborations, games, projects, or just a good conversation.')}</textarea></div>
+        <div class="form-grid two">
+          <div class="form-field"><label>DISCORD</label><input id="f-contact-discord" value="${esc(data.profile.discord || '')}" placeholder="lucian_vex"></div>
+          <div class="form-field"><label>EMAIL</label><input id="f-contact-email" type="email" value="${esc(data.profile.email || '')}" placeholder="you@example.com"></div>
+        </div>
+        <button class="btn primary form-submit" data-save-manager="contact" data-index="-1" type="button">SAVE CONTACT INFO</button>`;
+    }
+
     if (type === 'skill') html = `
       <p class="eyebrow">SKILL MANAGER</p><h2 id="modal-title">${index < 0 ? 'Add skill' : 'Edit skill'}</h2>
       <div class="form-grid two">
@@ -354,6 +397,17 @@
       profile.bio = $('#f-profile-bio').value.trim();
       profile.chips = $('#f-profile-chips').value.split('•').map(v => v.trim().toUpperCase()).filter(Boolean).slice(0, 8);
       persist('About Me saved');
+      closeModal();
+      return;
+    }
+    if (type === 'contact') {
+      const profile = data.profile || (data.profile = {});
+      profile.contact ||= {};
+      profile.contact.title = $('#f-contact-title').value.trim() || 'Contact';
+      profile.contact.text = $('#f-contact-text').value.trim() || 'Open to conversations, collaborations, games, projects, or just a good conversation.';
+      profile.discord = $('#f-contact-discord').value.trim();
+      profile.email = $('#f-contact-email').value.trim();
+      persist('Contact info saved');
       closeModal();
       return;
     }
@@ -580,16 +634,23 @@
     'royal-pulse': {name:'Royal Pulse', sub:'Dark navy / royal purple / pink', bg:'#070913', bg2:'#0d1020', panel:'#101427', panel2:'#171b33', pink:'#ff3bbd', pink2:'#ff79d4', purple:'#6366f1', purple2:'#a78bfa', white:'#f7f8ff', muted:'#a5abc1', line:'#28304c'}
   };
 
-  function applyTheme(name, colors = null) {
+  function applyTheme(name, colors = null, persistData = true) {
     const theme = colors || THEMES[name] || THEMES['vex-noir'];
     const root = document.documentElement;
     ['bg','bg2','panel','panel2','pink','pink2','purple','purple2','white','muted','line'].forEach(key => root.style.setProperty(`--${key}`, theme[key]));
-    localStorage.setItem('lucian-vex-theme', JSON.stringify({name, custom: !!colors, colors:theme}));
+    const state = { name: name || 'vex-noir', custom: !!colors, colors: { ...theme } };
+    try { localStorage.setItem('lucian-vex-theme', JSON.stringify(state)); } catch (_) {}
+    if (persistData && data?.profile) data.profile.theme = state;
     document.body.dataset.theme = name || 'custom';
   }
 
   function loadTheme() {
-    try { const saved = JSON.parse(localStorage.getItem('lucian-vex-theme') || 'null'); if (saved?.colors) applyTheme(saved.name, saved.custom ? saved.colors : null); } catch (_) {}
+    const published = data?.profile?.theme;
+    if (published?.colors) {
+      applyTheme(published.name, published.custom ? published.colors : null, false);
+      return;
+    }
+    try { const saved = JSON.parse(localStorage.getItem('lucian-vex-theme') || 'null'); if (saved?.colors) applyTheme(saved.name, saved.custom ? saved.colors : null, false); else applyTheme('vex-noir', null, false); } catch (_) { applyTheme('vex-noir', null, false); }
   }
 
   const WALLPAPER_MODES = {
@@ -852,7 +913,7 @@
     const blob = new Blob([source], {type:'application/javascript'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = 'data.js'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-    showToast('data.js exported — upload it to GitHub');
+    showToast('data.js exported — publish it with your site host');
   }
 
   try { ownerMode = sessionStorage.getItem('lucian-vex-owner') === '1'; } catch (_) {}
@@ -898,12 +959,19 @@
   }));
 
   $('#menu-btn').addEventListener('click', () => $('#nav').classList.toggle('open'));
-  loadTheme();
   applyLiveWallpaper();
   $$('#nav a').forEach(link => link.addEventListener('click', () => $('#nav').classList.remove('open')));
 
-  renderDiscordProfile();
-  renderAll();
-  setupReveal();
+  (async () => {
+    const published = normalizeData(await loadPublishedData());
+    const activeOwnerSession = ownerMode && saved;
+    data = normalizeData(activeOwnerSession ? saved : published);
+    window.LUCIAN_DATA = clone(published);
+    loadTheme();
+    renderAll();
+    renderDiscordProfile();
+    applyOwnerVisibility();
+    setupReveal();
+  })();
   setupCursor();
 })();
