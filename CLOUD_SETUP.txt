@@ -1,0 +1,173 @@
+LUCIAN VEX — CLOUD SYNC SETUP (V14)
+================================
+
+WHAT THIS DOES
+---------------
+After setup, Lucian Vex uses Supabase as the shared source of truth.
+
+YOU EDIT ON PC
+    -> SAVE
+    -> Supabase database
+    -> every visitor/device reads the same data
+
+The site also listens for database updates in real time, so an open page can refresh its public content when you save. The site uses Supabase Auth for owner login and Row Level Security so only your owner account can update the row.
+
+IMPORTANT
+---------
+You only need to do this cloud setup once. Keep using GitHub Desktop for the website files and thousands of poster files.
+
+STEP 1 — CREATE SUPABASE PROJECT
+--------------------------------
+1. Go to https://supabase.com/dashboard
+2. Create a new project.
+3. Wait until the project is ready.
+
+STEP 2 — CREATE YOUR OWNER ACCOUNT
+----------------------------------
+You can create it either:
+- in Supabase Dashboard -> Authentication -> Users -> Add user
+OR
+- later from the Lucian Vex Owner Login using CREATE ACCOUNT.
+
+The easiest path is to create the account in the dashboard first.
+
+STEP 3 — GET YOUR USER UUID
+---------------------------
+In Supabase:
+Authentication -> Users
+
+Copy the UUID of your owner account.
+It looks like a long value such as:
+xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+STEP 4 — RUN THE SQL
+--------------------
+1. Open SQL Editor in Supabase.
+2. Open setup-supabase.sql from this folder.
+3. Find:
+
+YOUR_OWNER_USER_UUID
+
+4. Replace it with the UUID you copied.
+5. Run the whole SQL script.
+
+This creates the database row using the COMPLETE current site data, enables Row Level Security, grants public read access, grants update access only to the owner UUID, and adds the table to Supabase Realtime.
+
+STEP 5 — GET SUPABASE URL + PUBLISHABLE KEY
+--------------------------------------------
+In your Supabase project, open the project API/settings area.
+Copy:
+- Project URL
+- Publishable key
+
+Do NOT use the service_role/secret key in the website.
+The browser should only use the publishable key, with RLS protecting the database.
+
+STEP 6 — CONFIGURE THE WEBSITE
+------------------------------
+Open:
+
+supabase-config.js
+
+It currently contains:
+
+window.LUCIAN_SUPABASE_CONFIG = {
+  url: '',
+  publishableKey: ''
+};
+
+Paste your values between the quotes.
+Save the file.
+
+STEP 7 — UPLOAD/PUSH THE NEW SITE FILES
+---------------------------------------
+Copy these into your local Lucian Vex Git repository:
+
+index.html
+script.js
+style.css
+data.js
+supabase-config.js
+setup-supabase.sql
+
+Keep your existing images folder.
+Do not delete your existing poster collection.
+
+Then open GitHub Desktop:
+- review the changed files
+- Commit to main
+- Push origin
+
+STEP 8 — OWNER LOGIN
+--------------------
+Open the live Lucian Vex website.
+Press:
+
+Ctrl + Shift + L
+
+You will get the secure cloud login.
+Sign in with your owner email/password.
+
+If the account is not the UUID assigned to the row in Supabase, the site will refuse Owner Mode.
+
+STEP 9 — TEST THE SHARED SYNC
+-----------------------------
+On your PC:
+- unlock Owner Mode
+- edit About Me
+- click SAVE
+
+Then open the site on another device.
+That device should now load the same cloud data.
+
+If the other device is already open on the site, it should receive the database update through Supabase Realtime and refresh the public data.
+
+POSTERS / THOUSANDS OF IMAGES
+-----------------------------
+Keep bulk posters as normal files:
+
+images/anime/
+images/games/
+
+Use GitHub Desktop for large batches of poster files.
+Do not store thousands of poster images as base64 inside the database.
+
+OWNER MODE VS PUBLIC VISITORS
+-----------------------------
+Visitors:
+- can read the public site
+- cannot update the database
+- do not get owner controls
+
+Owner:
+- signs in with Supabase Auth
+- can edit site content
+- saves changes directly to the shared database
+
+WHY SUPABASE
+------------
+Supabase Free currently includes 500 MB database storage, 1 GB file storage, 50,000 monthly active users, and Realtime/auth capabilities. Keep your poster archive in GitHub rather than the database/storage unless you later decide to move media to a dedicated object store.
+
+TROUBLESHOOTING
+---------------
+Owner login works but SAVE says cloud save failed:
+- Check that setup-supabase.sql ran successfully.
+- Check that owner_uid exactly matches your Auth user's UUID.
+- Check that supabase-config.js has the correct Project URL and Publishable Key.
+
+Site says cloud data unavailable:
+- Check the public SELECT policy.
+- Check that row id=1 exists in lucian_site_data.
+
+Open pages do not update live:
+- Check that lucian_site_data was added to the supabase_realtime publication.
+- Check the Realtime settings for the project.
+
+Do not put a service_role/secret key into the website.
+
+
+IMPORTANT SECURITY NOTE
+------------------------
+The website must use ONLY the Supabase publishable key (sb_publishable_...). Never put a secret key in the site. Supabase documents publishable keys as the correct browser-side key; RLS controls what authenticated/anonymous users can read or write.
+
+After the cloud setup is working, the normal workflow is simply: Owner Mode -> edit -> SAVE -> cloud sync -> every device sees the same saved data. GitHub Desktop remains for website code and image files.

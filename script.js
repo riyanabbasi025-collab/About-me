@@ -6,9 +6,16 @@
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
 
+  const SUPABASE_CONFIG = window.LUCIAN_SUPABASE_CONFIG || {};
+  const SUPABASE_URL = String(SUPABASE_CONFIG.url || '').trim();
+  const SUPABASE_KEY = String(SUPABASE_CONFIG.publishableKey || '').trim();
+  const cloudEnabled = Boolean(window.supabase && SUPABASE_URL && SUPABASE_KEY);
+  const supabaseClient = cloudEnabled ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
+  let cloudSession = null;
+  let cloudOwner = false;
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) {}
-  let data = clone(saved || window.LUCIAN_DATA || {});
+  let data = clone(window.LUCIAN_DATA || {});
   data.profile ||= {};
   data.skills ||= [];
   data.games ||= [];
@@ -16,19 +23,42 @@
   data.links ||= [];
 
   async function loadPublishedData() {
-    try {
-      const response = await fetch(`data.js?cb=${Date.now()}`, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`data.js request failed: ${response.status}`);
-      const source = await response.text();
-      const match = source.match(/window\.LUCIAN_DATA\s*=\s*([\s\S]*?)\s*;?\s*$/);
-      if (!match) throw new Error('Published data.js format is invalid');
-      const parsed = JSON.parse(match[1].trim().replace(/;\s*$/, ''));
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch (error) {
-      console.warn('Lucian Vex: fresh published data could not be loaded; using bundled data.', error);
-      return clone(window.LUCIAN_DATA || {});
+    if (cloudEnabled) {
+      try {
+        const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data,updated_at').eq('id', 1).single();
+        if (error) throw error;
+        if (row?.data && typeof row.data === 'object') return normalizeData(row.data);
+      } catch (error) {
+        console.warn('Lucian Vex: cloud data unavailable; using bundled data.', error);
+      }
     }
+    return normalizeData(window.LUCIAN_DATA || {});
   }
+
+  async function loadOwnerSession() {
+    if (!cloudEnabled) return null;
+    try {
+      const { data: authData } = await supabaseClient.auth.getSession();
+      cloudSession = authData?.session || null;
+      cloudOwner = false;
+      if (cloudSession?.user) {
+        const { data: row, error } = await supabaseClient.from('lucian_site_data').select('owner_uid').eq('id', 1).single();
+        if (!error && row?.owner_uid) cloudOwner = String(row.owner_uid) === String(cloudSession.user.id);
+      }
+      return cloudSession;
+    } catch (_) { return null; }
+  }
+
+  async function loadCloudForOwner() {
+    if (!cloudEnabled || !cloudSession) return false;
+    try {
+      const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data').eq('id', 1).single();
+      if (error) throw error;
+      if (row?.data) { data = normalizeData(row.data); return true; }
+    } catch (error) { console.error(error); showToast('Cloud data could not be loaded'); }
+    return false;
+  }
+
 
   function normalizeData(source) {
     const value = clone(source || {});
@@ -63,21 +93,34 @@
     if (state) state.textContent = ownerMode ? 'OWNER MODE' : 'LOCKED';
   }
 
-  function unlockOwner() {
-    const attempt = prompt('OWNER ACCESS\nEnter your private owner code:');
-    if (attempt === OWNER_PIN) {
-      ownerMode = true;
-      try { sessionStorage.setItem('lucian-vex-owner', '1'); } catch (_) {}
-      applyOwnerVisibility();
-      showToast('Owner mode unlocked');
-      return true;
+  async function unlockOwner() {
+    if (!cloudEnabled) {
+      const attempt = prompt('OWNER ACCESS\nEnter your private owner code:');
+      if (attempt === OWNER_PIN) { ownerMode = true; try { sessionStorage.setItem('lucian-vex-owner', '1'); } catch (_) {} applyOwnerVisibility(); showToast('Owner mode unlocked'); return true; }
+      if (attempt !== null) showToast('Access denied');
+      return false;
     }
-    if (attempt !== null) showToast('Access denied');
+    if (cloudOwner && cloudSession) { ownerMode = true; await loadCloudForOwner(); applyOwnerVisibility(); showToast('Owner mode unlocked'); return true; }
+    openModal(`<p class="eyebrow">SECURE OWNER ACCESS</p><h2 id="modal-title">Lucian Vex Cloud Login</h2><p class="muted-note">This replaces the old local PIN with a real account. Your website edits are stored in the shared cloud database.</p><div class="form-field"><label>EMAIL</label><input id="cloud-email" type="email" autocomplete="email" placeholder="you@example.com"></div><div class="form-field"><label>PASSWORD</label><input id="cloud-password" type="password" autocomplete="current-password" placeholder="Your password"></div><div class="form-grid two"><button class="btn primary form-submit" id="cloud-login" type="button">SIGN IN</button><button class="btn ghost form-submit" id="cloud-signup" type="button">CREATE ACCOUNT</button></div><p class="muted-note">Create the owner account once in Supabase, then use SIGN IN here.</p>`);
+    const doLogin = async (signup=false) => {
+      const email = $('#cloud-email').value.trim(); const password = $('#cloud-password').value;
+      if (!email || !password) return showToast('Enter email and password');
+      const result = signup ? await supabaseClient.auth.signUp({ email, password }) : await supabaseClient.auth.signInWithPassword({ email, password });
+      if (result.error) return showToast(result.error.message);
+      cloudSession = result.data.session || null;
+      if (!cloudSession) { closeModal(); showToast('Account created — check your email if confirmation is enabled'); return; }
+      await loadOwnerSession();
+      if (!cloudOwner) { await supabaseClient.auth.signOut(); cloudSession = null; closeModal(); showToast('This account is not the Lucian Vex owner'); return; }
+      ownerMode = true; await loadCloudForOwner(); closeModal(); applyOwnerVisibility(); showToast('Owner mode unlocked');
+    };
+    $('#cloud-login').addEventListener('click', () => doLogin(false));
+    $('#cloud-signup').addEventListener('click', () => doLogin(true));
     return false;
   }
 
-  function lockOwner() {
+  async function lockOwner() {
     ownerMode = false;
+    if (cloudEnabled && cloudSession) { try { await supabaseClient.auth.signOut(); } catch (_) {} cloudSession = null; cloudOwner = false; }
     try { sessionStorage.removeItem('lucian-vex-owner'); } catch (_) {}
     applyOwnerVisibility();
     closeModal();
@@ -92,15 +135,24 @@
     showToast.timer = setTimeout(() => toast.classList.remove('show'), 1800);
   }
 
-  function persist(message = 'Saved') {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(data));
-      renderAll();
-      showToast(message);
-    } catch (error) {
-      showToast('Storage is full — use smaller posters');
-      console.error(error);
+  async function persist(message = 'Saved') {
+    if (!ownerMode) return showToast('Owner mode is locked');
+    if (cloudEnabled && cloudSession) {
+      try {
+        const { error } = await supabaseClient.from('lucian_site_data').update({ data, updated_at: new Date().toISOString() }).eq('id', 1);
+        if (error) throw error;
+        try { localStorage.removeItem(KEY); } catch (_) {}
+        renderAll();
+        showToast(message + ' • synced');
+        return;
+      } catch (error) {
+        console.error(error);
+        showToast('Cloud save failed — nothing was published');
+        return;
+      }
     }
+    try { localStorage.setItem(KEY, JSON.stringify(data)); renderAll(); showToast(message); }
+    catch (error) { showToast('Storage is full — use smaller posters'); console.error(error); }
   }
 
   function openModal(html) {
@@ -804,12 +856,12 @@
       if (key==='wallpaper' && !ownerMode) $('#theme-live-label') && ($('#theme-live-label').textContent='LOCKED');
     }));
 
-    $$('.theme-preset').forEach(btn => btn.addEventListener('click', () => {
+    $$('.theme-preset').forEach(btn => btn.addEventListener('click', async () => {
       applyTheme(btn.dataset.themePreset);
       $$('.theme-preset').forEach(x=>x.classList.toggle('active',x===btn));
       $$('.preset-check').forEach(x=>x.textContent='');
       btn.querySelector('.preset-check').textContent='✓';
-      showToast(`${THEMES[btn.dataset.themePreset].name} applied`);
+      if (ownerMode) await persist('Theme saved'); else showToast(`${THEMES[btn.dataset.themePreset].name} applied locally`);
     }));
 
     $$('[data-toggle-section]').forEach(btn => btn.addEventListener('click', () => {
@@ -856,10 +908,10 @@
       applyLiveWallpaper(); persist('Wallpaper system saved'); closeModal();
     });
 
-    $('#save-custom-theme')?.addEventListener('click', () => {
+    $('#save-custom-theme')?.addEventListener('click', async () => {
       const custom = {...THEMES['vex-noir'], name:'Custom', sub:'Your saved palette', bg:$('#theme-bg').value, panel:$('#theme-panel').value, pink:$('#theme-pink').value, purple:$('#theme-purple').value, white:$('#theme-white').value, muted:$('#theme-muted').value};
       custom.bg2 = mixHex(custom.bg, '#ffffff', .06); custom.panel2 = mixHex(custom.panel, '#ffffff', .05); custom.pink2 = mixHex(custom.pink, '#ffffff', .25); custom.purple2 = mixHex(custom.purple, '#ffffff', .3); custom.line = mixHex(custom.panel, '#ffffff', .12);
-      applyTheme('custom', custom); closeModal(); showToast('Custom palette saved');
+      applyTheme('custom', custom); if (ownerMode) await persist('Custom theme saved'); else showToast('Custom palette saved locally'); closeModal();
     });
   }
 
@@ -916,7 +968,6 @@
     showToast('data.js exported — publish it with your site host');
   }
 
-  try { ownerMode = sessionStorage.getItem('lucian-vex-owner') === '1'; } catch (_) {}
   applyOwnerVisibility();
   document.addEventListener('keydown', event => {
     if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'l') {
@@ -963,10 +1014,20 @@
   $$('#nav a').forEach(link => link.addEventListener('click', () => $('#nav').classList.remove('open')));
 
   (async () => {
-    const published = normalizeData(await loadPublishedData());
-    const activeOwnerSession = ownerMode && saved;
-    data = normalizeData(activeOwnerSession ? saved : published);
-    window.LUCIAN_DATA = clone(published);
+    if (cloudEnabled) {
+      await loadOwnerSession();
+      const published = normalizeData(await loadPublishedData());
+      data = published;
+      window.LUCIAN_DATA = clone(published);
+      if (cloudSession && !cloudOwner) { await supabaseClient.auth.signOut(); cloudSession = null; }
+      supabaseClient.channel('lucian-vex-site-data').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'lucian_site_data', filter: 'id=eq.1' }, payload => {
+        if (!ownerMode) { data = normalizeData(payload.new?.data || data); window.LUCIAN_DATA = clone(data); loadTheme(); renderAll(); showToast('Site updated'); }
+      }).subscribe();
+    } else {
+      const published = normalizeData(await loadPublishedData());
+      data = normalizeData(saved || published);
+      window.LUCIAN_DATA = clone(published);
+    }
     loadTheme();
     renderAll();
     renderDiscordProfile();

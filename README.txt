@@ -81,3 +81,10 @@ If another device shows old content:
 
 V13 NOTE
 Theme state is now stored in the exported site data as well as locally, so published theme choices can travel to other devices through data.js.
+
+
+V14 CLOUD EDITION
+------------------
+The cloud-enabled build uses Supabase as the shared data source when supabase-config.js is configured. Without Supabase configuration it falls back to the bundled data for safe previewing.
+
+For production cloud sync, follow CLOUD_SETUP.txt exactly once.
