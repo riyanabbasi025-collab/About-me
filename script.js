@@ -524,6 +524,7 @@
   let discordAvatarData = '';
   let discordBannerData = '';
   let discordDecorationData = '';
+  let discordDecorationCleared = false;
 
   function discordProfile() {
     data.profile.discordProfile ||= {};
@@ -633,6 +634,7 @@
     discordAvatarData = p.avatar || '';
     discordBannerData = p.banner || '';
     discordDecorationData = p.decoration || '';
+    discordDecorationCleared = false;
     const badges = (p.badges || []).join(' • ');
     openModal(`<p class="eyebrow">DISCORD // MANUAL PROFILE</p><h2 id="modal-title">Edit your profile card</h2>
       <p class="muted-note">No live Discord connection. Everything below is manually controlled by you and gets saved with your site data.</p>
@@ -656,8 +658,8 @@
 
     $('#f-discord-avatar-file').addEventListener('change', e => fileToDataURL(e.target.files?.[0], value => { discordAvatarData = value; showToast('Avatar attached'); }));
     $('#f-discord-banner-file').addEventListener('change', e => fileToDataURL(e.target.files?.[0], value => { discordBannerData = value; showToast('Banner attached'); }));
-    $('#f-discord-decoration-file').addEventListener('change', e => fileToDataURL(e.target.files?.[0], value => { discordDecorationData = value; $('#f-discord-decoration').value = ''; showToast('Decoration attached'); }));
-    $('#clear-discord-decoration').addEventListener('click', () => { discordDecorationData = ''; $('#f-discord-decoration').value = ''; showToast('Decoration cleared'); });
+    $('#f-discord-decoration-file').addEventListener('change', e => fileToDataURL(e.target.files?.[0], value => { discordDecorationData = value; discordDecorationCleared = false; $('#f-discord-decoration').value = ''; showToast('Decoration attached'); }));
+    $('#clear-discord-decoration').addEventListener('click', () => { discordDecorationData = ''; discordDecorationCleared = true; $('#f-discord-decoration').value = ''; showToast('Decoration marked for removal'); });
     $('#save-discord').addEventListener('click', () => {
       const p = discordProfile();
       p.displayName = $('#f-discord-display').value.trim() || 'LUCIAN VEX';
@@ -671,7 +673,11 @@
       const decorationUrl = $('#f-discord-decoration').value.trim();
       p.avatar = discordAvatarData || avatarUrl || '';
       p.banner = discordBannerData || bannerUrl || '';
-      p.decoration = discordDecorationData || decorationUrl || '';
+      if (discordDecorationCleared) {
+        delete p.decoration;
+      } else {
+        p.decoration = discordDecorationData || decorationUrl || '';
+      }
       p.profileEffect = $('#f-discord-effect').checked;
       p.badges = $('#f-discord-badges').value.split(/\s*[•|]\s*/).map(v => v.trim()).filter(Boolean).slice(0, 4);
       data.profile.status = p.status;
