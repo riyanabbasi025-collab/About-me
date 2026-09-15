@@ -40,6 +40,52 @@
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) {}
 
+  // Fast persistent data cache: IndexedDB survives page changes and handles larger
+  // cloud payloads better than localStorage. It is only a read-ahead cache; Supabase
+  // remains the source of truth and RLS still protects writes.
+  const CACHE_DB = 'lucian-vex-cache-v1';
+  const CACHE_STORE = 'state';
+  const CACHE_KEY = 'published-data';
+  function openCacheDB() {
+    return new Promise(resolve => {
+      if (!('indexedDB' in window)) return resolve(null);
+      try {
+        const req = indexedDB.open(CACHE_DB, 1);
+        req.onupgradeneeded = () => {
+          try { req.result.createObjectStore(CACHE_STORE); } catch (_) {}
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch (_) { resolve(null); }
+    });
+  }
+  async function readDataCache() {
+    const db = await openCacheDB();
+    if (!db) return null;
+    return new Promise(resolve => {
+      try {
+        const tx = db.transaction(CACHE_STORE, 'readonly');
+        const req = tx.objectStore(CACHE_STORE).get(CACHE_KEY);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch (_) { resolve(null); }
+      tx.oncomplete = () => { try { db.close(); } catch (_) {} };
+    });
+  }
+  async function writeDataCache(value) {
+    const db = await openCacheDB();
+    if (!db) return;
+    await new Promise(resolve => {
+      try {
+        const tx = db.transaction(CACHE_STORE, 'readwrite');
+        tx.objectStore(CACHE_STORE).put(value, CACHE_KEY);
+        tx.oncomplete = resolve;
+        tx.onerror = tx.onabort = resolve;
+      } catch (_) { resolve(); }
+    });
+    try { db.close(); } catch (_) {}
+  }
+
   const fallbackData = {
     profile: {}, skills: [], games: [], anime: [], links: [], categories: []
   };
@@ -1422,19 +1468,37 @@
   loadTheme();
   renderAll();
   setupCursor();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=31').catch(() => {});
-  // Cache-first boot: paint immediately, then reconcile cloud data in the background.
-  loadPublishedData().then(remote => {
-    const remoteCount = (remote.games?.length || 0) + (remote.anime?.length || 0) + (remote.skills?.length || 0) + (remote.links?.length || 0);
-    const localCount = (data.games?.length || 0) + (data.anime?.length || 0) + (data.skills?.length || 0) + (data.links?.length || 0);
-    if (remoteCount > 0 && JSON.stringify(remote) !== JSON.stringify(data)) {
-      data = normalizeData(remote);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=32').catch(() => {});
+
+  const applyIncomingData = nextData => {
+    const next = normalizeData(nextData || {});
+    const nextCount = (next.games?.length || 0) + (next.anime?.length || 0) + (next.skills?.length || 0) + (next.links?.length || 0);
+    const currentCount = (data.games?.length || 0) + (data.anime?.length || 0) + (data.skills?.length || 0) + (data.links?.length || 0);
+    if (nextCount > 0 && (currentCount === 0 || JSON.stringify(next) !== JSON.stringify(data))) {
+      data = next;
       try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (_) {}
+      writeDataCache(data).catch(() => {});
       loadTheme();
       renderAll();
       applyLiveWallpaper();
-    } else if (localCount > 0) {
-      try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (_) {}
+      return true;
     }
-  });
+    if (currentCount > 0) {
+      try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (_) {}
+      writeDataCache(data).catch(() => {});
+    }
+    return false;
+  };
+
+  // Phase 1: restore the last known cloud snapshot from IndexedDB immediately.
+  // This is what makes page-to-page navigation feel instant after the first visit.
+  readDataCache().then(cached => {
+    if (cached) applyIncomingData(cached);
+  }).catch(() => {});
+
+  // Phase 2: refresh from Supabase in the background. A service-worker cached
+  // response is allowed to satisfy this instantly while revalidation happens behind it.
+  loadPublishedData().then(remote => {
+    if (remote) applyIncomingData(remote);
+  }).catch(() => {});
 })();
