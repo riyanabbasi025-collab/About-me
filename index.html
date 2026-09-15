@@ -1,90 +1,24 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#0a0710">
-<title>Lucian Vex — Personal Archive</title>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<div class="live-wallpaper-layer" id="live-wallpaper-layer" aria-hidden="true"><div class="live-wallpaper-sheen"></div><video id="live-wallpaper-video" muted autoplay loop playsinline></video></div><div class="bg-orb orb-a"></div><div class="bg-orb orb-b"></div><div class="bg-grid"></div><div class="cursor-core" id="cursor-core" aria-hidden="true"></div><div class="cursor-ring" id="cursor-ring" aria-hidden="true"></div><div class="cursor-trail" id="cursor-trail" aria-hidden="true"></div>
-<header class="topbar">
-  <a class="brand" href="#home"><span class="brand-mark">LV</span><span>LUCIAN <b>VEX</b></span></a>
-  <div class="topbar-actions"><button class="theme-btn owner-only" id="export-btn" type="button">EXPORT</button><button class="theme-btn" id="theme-btn" type="button">THEME</button><button class="menu-btn" id="menu-btn" type="button">☰</button></div>
-  <nav id="nav"><a href="#home">HOME</a><a href="#about">ABOUT</a><a href="#skills">SKILLS</a><a href="#gaming">GAMING</a><a href="#anime">ANIME</a><a href="#network">NETWORK</a><a href="#contact">CONTACT</a></nav>
-</header>
-
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0a0710"><title>Home — Lucian Vex</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="home">
+<div class="live-wallpaper-layer" id="live-wallpaper-layer" aria-hidden="true"><div class="live-wallpaper-sheen"></div><video id="live-wallpaper-video" muted autoplay loop playsinline></video></div>
+<div class="bg-orb orb-a"></div><div class="bg-orb orb-b"></div><div class="bg-grid"></div><div class="cursor-core" id="cursor-core" aria-hidden="true"></div><div class="cursor-ring" id="cursor-ring" aria-hidden="true"></div><div class="cursor-trail" id="cursor-trail" aria-hidden="true"></div>
+<header class="topbar"><a class="brand" href="index.html"><span class="brand-mark">LV</span><span>LUCIAN <b>VEX</b></span></a><div class="topbar-actions"><button class="theme-btn" id="global-search-btn" type="button">SEARCH</button><button class="theme-btn owner-only" id="export-btn" type="button">EXPORT</button><button class="theme-btn owner-only" id="category-system-open" type="button">CATEGORIES</button><button class="theme-btn" id="theme-btn" type="button">THEME</button><button class="menu-btn" id="menu-btn" type="button">☰</button></div><nav id="nav">
+<a href="index.html">HOME</a><a href="about.html">ABOUT</a><a href="skills.html">SKILLS</a><a href="gaming.html">GAMING</a><a href="anime.html">ANIME</a><a href="network.html">NETWORK</a><a href="contact.html">CONTACT</a><a href="theme.html">THEME</a>
+</nav></header>
 <main>
-<section id="home" class="hero section-pad">
-  <div class="hero-copy reveal reveal-left">
-    <div class="eyebrow">PERSONAL ARCHIVE // ONLINE</div>
-    <h1>LUCIAN <span>VEX</span></h1>
-    <p class="hero-line">Build. Learn. Play. <span>Repeat.</span></p>
-    <p class="muted">Projects, skills, games, anime and the systems behind them — collected in one place.</p>
-    <div class="actions"><a class="btn primary" href="#about">EXPLORE</a><a class="btn ghost" href="#anime">ANIME ARCHIVE</a></div>
-  </div>
-  <aside class="discord-card reveal reveal-right" id="discord-card">
-    <div class="discord-top"><span class="mini-label">DISCORD // PROFILE</span><span class="live-pill"><i></i><b id="discord-status-label">ONLINE</b></span></div>
-    <div class="discord-banner" id="discord-banner"></div>
-    <div class="discord-profile">
-      <div class="discord-avatar-wrap"><div id="discord-avatar-fallback" class="discord-avatar-fallback" aria-hidden="true">LV</div><img id="discord-avatar" class="discord-avatar" src="" alt="Discord avatar"><img id="discord-decoration" class="discord-decoration" src="" alt=""><span id="discord-status-dot" class="discord-status-dot" data-status="online"></span></div>
-      <div class="discord-identity"><strong id="discord-display-name">LUCIAN VEX</strong><span id="discord-username">@lucian_vex</span><small id="discord-custom-status">Building systems &amp; collecting worlds.</small><div class="discord-badges"><span id="discord-effect-badge">PROFILE EFFECT READY</span><span id="discord-frame-badge">PERSONAL PROFILE</span></div></div>
-    </div>
-    <div class="discord-activity" id="discord-activity"><span class="activity-label">ABOUT ME</span><strong id="discord-activity-name">Lucian Vex</strong><small id="discord-activity-detail">Self-taught developer, gamer and anime fan.</small></div>
-    <div class="discord-footer"><span id="discord-updated">PERSONAL PROFILE</span><a class="discord-open" id="discord-open" href="https://discord.com" target="_blank" rel="noopener noreferrer">VIEW PROFILE ↗</a></div>
-    <button class="discord-setup owner-only" id="discord-setup" type="button">EDIT DISCORD PROFILE</button>
-  </aside>
+<section class="page-hero section-pad">
+ <div class="hero-copy reveal reveal-left"><div class="eyebrow">PERSONAL ARCHIVE // ONLINE</div><h1>LUCIAN <span>VEX</span></h1><p class="hero-line">Build. Learn. Play. <span>Repeat.</span></p><p class="muted">A personal archive for projects, games, anime, skills and everything worth keeping.</p><div class="actions"><a class="btn primary" href="about.html">EXPLORE PROFILE</a><a class="btn ghost" href="gaming.html">OPEN GAMING</a><a class="btn ghost" href="anime.html">OPEN ANIME</a></div></div>
+ <aside class="discord-card reveal reveal-right" id="discord-card"><div class="discord-top"><span class="mini-label">DISCORD // PROFILE</span><span class="live-pill"><i></i><b id="discord-status-label">ONLINE</b></span></div><div class="discord-banner" id="discord-banner"></div><div class="discord-profile"><div class="discord-avatar-wrap"><div id="discord-avatar-fallback" class="discord-avatar-fallback">LV</div><img id="discord-avatar" class="discord-avatar" src="" alt="Discord avatar"><img id="discord-decoration" class="discord-decoration" src="" alt=""><span id="discord-status-dot" class="discord-status-dot" data-status="online"></span></div><div class="discord-identity"><strong id="discord-display-name">LUCIAN VEX</strong><span id="discord-username">@lucian_vex</span><small id="discord-custom-status">Building systems &amp; collecting worlds.</small><div class="discord-badges"><span id="discord-effect-badge">PROFILE EFFECT READY</span><span id="discord-frame-badge">PERSONAL PROFILE</span></div></div></div><div class="discord-activity" id="discord-activity"><span class="activity-label">ABOUT ME</span><strong id="discord-activity-name">Lucian Vex</strong><small id="discord-activity-detail">Self-taught developer, gamer and anime fan.</small></div><div class="discord-footer"><span id="discord-updated">PERSONAL PROFILE</span><a class="discord-open" id="discord-open" href="https://discord.com" target="_blank" rel="noopener noreferrer">VIEW PROFILE ↗</a></div><button class="discord-setup owner-only" id="discord-setup" type="button">EDIT DISCORD PROFILE</button></aside>
 </section>
-
-<section id="about" class="section-pad">
-  <div class="section-head reveal"><span>01</span><div><p class="eyebrow">ABOUT ME</p><h2>Behind the screen <i>—</i></h2></div><button class="btn primary small owner-only" data-open="profile" type="button">＋ EDIT ABOUT ME</button></div>
-  <div class="about-grid reveal-stagger">
-    <article class="panel about-main reveal"><div class="mini-label">// PROFILE</div><h3 id="profile-name">Lucian Vex</h3><p id="profile-bio"></p><div class="chips" id="profile-chips"><span>SELF-TAUGHT</span><span>CREATIVE</span><span>GAMER</span><span>BUILDER</span></div></article>
-    <aside class="panel stats reveal"><div><b id="stat-skills">0</b><span>SKILLS</span></div><div><b id="stat-games">0</b><span>GAMES</span></div><div><b id="stat-anime">0</b><span>ANIME</span></div></aside>
-  </div>
-</section>
-
-<section id="skills" class="section-pad">
-  <div class="section-head reveal"><span>02</span><div><p class="eyebrow">SKILLS</p><h2>Things I can <i>build</i></h2></div><button class="btn primary small owner-only" data-open="skill" type="button">＋ ADD SKILL</button></div>
-  <div id="skills-grid" class="cards-grid"></div>
-</section>
-
-<section id="gaming" class="section-pad">
-  <div class="section-head reveal"><span>03</span><div><p class="eyebrow">GAMING</p><h2>Games I <i>play</i></h2></div><button class="btn primary small owner-only" data-open="game" type="button">＋ ADD GAME</button></div>
-  <div id="game-grid" class="cards-grid game-grid"></div>
-</section>
-
-<section id="anime" class="section-pad">
-  <div class="section-head reveal"><span>04</span><div><p class="eyebrow">ANIME</p><h2>My anime <i>archive</i></h2></div><div class="head-actions"><button class="btn ghost small owner-only" data-open="anime" type="button">＋ ADD MANUALLY</button><button class="btn primary small owner-only" id="anilist-search-open" type="button">ANILIST SEARCH</button></div></div>
-  <div class="anime-toolbar reveal"><button class="filter active" data-filter="all" type="button">ALL</button><button class="filter" data-filter="Watching" type="button">WATCHING</button><button class="filter" data-filter="Completed" type="button">COMPLETED</button><button class="filter" data-filter="Planning" type="button">PLANNING</button><button class="filter" data-filter="Paused" type="button">PAUSED</button><button class="filter" data-filter="Dropped" type="button">DROPPED</button><button class="filter" data-filter="Favorite" type="button">FAVORITES</button></div>
-  <div id="anime-grid" class="cards-grid anime-grid"></div>
-</section>
-
-<section id="network" class="section-pad">
-  <div class="section-head reveal"><span>05</span><div><p class="eyebrow">NETWORK</p><h2>Find me <i>online</i></h2></div><button class="btn primary small owner-only" data-open="link" type="button">＋ ADD CONNECTION</button></div>
-  <div id="links-grid" class="cards-grid"></div>
-</section>
-
-<section id="contact" class="section-pad contact">
-  <div class="section-head reveal"><span>06</span><div><p class="eyebrow">CONTACT</p><h2 id="contact-title">Contact <i>me</i></h2></div><button class="btn primary small owner-only" data-open="contact" type="button">＋ EDIT CONTACT</button></div>
-  <p class="contact-intro reveal" id="contact-text">Open to conversations, collaborations, games, projects, or just a good conversation.</p>
-  <div class="contact-box reveal"><span>DISCORD</span><b id="discord">lucian_vex</b><span>EMAIL</span><b id="email">riyanabbasi025@gmail.com</b></div>
+<section class="section-pad"><div class="page-title reveal"><span class="eyebrow">SYSTEM DASHBOARD</span><h2>Everything in <i>one view.</i></h2><p>Archives are split into dedicated pages, while the dashboard keeps the latest state visible without loading every card at once.</p></div>
+<div class="dashboard-stats"><article><span>GAMES</span><strong id="home-games-count">0</strong></article><article><span>ANIME</span><strong id="home-anime-count">0</strong></article><article><span>SKILLS</span><strong id="home-skills-count">0</strong></article></div>
+<div class="dashboard-grid"><section class="panel dashboard-panel"><div class="panel-heading"><span class="mini-label">CURRENTLY PLAYING</span><a class="text-link" href="gaming.html">OPEN GAMING ↗</a></div><div id="home-current-games" class="mini-archive-list"></div></section><section class="panel dashboard-panel"><div class="panel-heading"><span class="mini-label">CURRENTLY WATCHING</span><a class="text-link" href="anime.html">OPEN ANIME ↗</a></div><div id="home-current-anime" class="mini-archive-list"></div></section></div>
+<section class="panel dashboard-panel"><div class="panel-heading"><span class="mini-label">RECENTLY UPDATED</span></div><div id="recent-updates" class="update-list"></div></section>
 </section>
 </main>
 <footer>LUCIAN VEX // PERSONAL ARCHIVE <span class="owner-state" id="owner-state">LOCKED</span></footer>
-
-<div class="modal-backdrop" id="modal" aria-hidden="true">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <button class="modal-close" id="modal-close" type="button" aria-label="Close">×</button>
-    <div id="modal-content"></div>
-  </div>
-</div>
-<div class="toast" id="toast"></div>
-<div class="theme-dock" id="theme-dock" aria-hidden="true"></div>
-<script src="data.js"></script>
-<script src="supabase-config.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="script.js"></script>
-</body>
-</html>
+<div class="modal-backdrop" id="modal" aria-hidden="true"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button class="modal-close" id="modal-close" type="button" aria-label="Close">×</button><div id="modal-content"></div></div></div>
+<div class="toast" id="toast"></div><div class="theme-dock" id="theme-dock" aria-hidden="true"></div>
+<script src="data.js"></script><script src="supabase-config.js"></script><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script src="script.js"></script>
+</body></html>

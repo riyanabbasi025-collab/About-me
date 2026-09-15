@@ -1,0 +1,44 @@
+LUCIAN VEX V20 — MIGRATION-SAFE UPDATE
+
+This package intentionally does NOT include data.js, supabase-config.js, setup-supabase.sql, or the images/ library.
+Keep those existing files from your current repository.
+
+Replace/add these files in the root of your About-me repository:
+- index.html
+- about.html
+- skills.html
+- gaming.html
+- anime.html
+- network.html
+- contact.html
+- theme.html
+- script.js
+- style.css
+- netlify.toml
+- netlify/functions/steam-search.js
+
+Do NOT delete:
+- data.js
+- supabase-config.js
+- images/
+- any other existing image/poster files
+
+Owner Mode remains Ctrl + Shift + L.
+
+V20 includes:
+- Separate pages for Home, About, Skills, Gaming, Anime, Network, Contact and Theme.
+- Universal shared categories for Games and Anime, including custom categories.
+- Global archive search.
+- Game/Anime details panels.
+- Game and Anime ratings.
+- Game achievements/milestones.
+- Recently Updated dashboard.
+- Currently Playing / Currently Watching dashboard.
+- 48-item archive paging with lazy poster loading.
+- Steam search/import through a Netlify Function, with manual game entry still available.
+- Full connection-card click behavior.
+- Live wallpaper stacking/animation fixes, built-in animated modes, image and video modes.
+- Migration of older liveWallpaper data stored under discordProfile.liveWallpaper.
+
+After copying files: GitHub Desktop -> Commit -> Push origin.
+Netlify will deploy the Git-connected update automatically.

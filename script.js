@@ -5,6 +5,8 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
+  const PAGE = document.body?.dataset?.page || 'home';
+  const pageUrl = (page, hash = '') => `${page}.html${hash}`;
 
   const SUPABASE_CONFIG = window.LUCIAN_SUPABASE_CONFIG || {};
   const SUPABASE_URL = String(SUPABASE_CONFIG.url || '').trim();
@@ -60,6 +62,65 @@
   }
 
 
+  const BUILTIN_CATEGORIES = [
+    { id: 'favorite', label: 'MY FAVORITES', builtin: true },
+    { id: 'rotation', label: 'IN ROTATION', builtin: true },
+    { id: 'want', label: 'WANT TO PLAY', builtin: true },
+    { id: 'completed', label: 'COMPLETED', builtin: true },
+    { id: 'watching', label: 'WATCHING', builtin: true },
+    { id: 'planning', label: 'PLANNING', builtin: true },
+    { id: 'paused', label: 'PAUSED', builtin: true },
+    { id: 'dropped', label: 'DROPPED', builtin: true }
+  ];
+
+  function slugCategory(value) {
+    return String(value || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 42);
+  }
+
+  function normalizeCategoryLibrary(value) {
+    const source = Array.isArray(value) ? value : [];
+    const seen = new Set();
+    const result = [];
+    [...BUILTIN_CATEGORIES, ...source].forEach(item => {
+      const id = String(item?.id || slugCategory(item?.label)).trim();
+      const label = String(item?.label || '').trim();
+      if (!id || !label || seen.has(id)) return;
+      seen.add(id);
+      result.push({ id, label, builtin: Boolean(item?.builtin || BUILTIN_CATEGORIES.some(x => x.id === id)) });
+    });
+    return result;
+  }
+
+  function legacyCategoryId(type, item) {
+    if (type === 'game') {
+      const raw = String(item?.category || '').trim().toLowerCase();
+      if (['favorite','favourite','favorites','favourites'].includes(raw)) return 'favorite';
+      if (['want','want to play','wishlist','backlog','planned'].includes(raw)) return 'want';
+      if (['completed','complete','finished','done'].includes(raw)) return 'completed';
+      return 'rotation';
+    }
+    if (type === 'anime') {
+      const status = normalizeAnimeStatus(item?.status).toLowerCase();
+      return ({ watching:'watching', completed:'completed', planning:'planning', paused:'paused', dropped:'dropped', favorite:'favorite' })[status] || 'planning';
+    }
+    return '';
+  }
+
+  function itemCategories(type, item, categorySource = data?.categories || []) {
+    const libraryIds = new Set((categorySource || []).map(x => x.id));
+    let cats = Array.isArray(item?.categories) ? item.categories.map(x => String(x).trim()).filter(Boolean) : [];
+    if (!cats.length) {
+      const legacy = legacyCategoryId(type, item);
+      if (legacy) cats.push(legacy);
+    }
+    if (type === 'anime' && item?.favorite && !cats.includes('favorite')) cats.push('favorite');
+    return [...new Set(cats.filter(id => libraryIds.has(id)))];
+  }
+
+  function categoryLabel(id) {
+    return (data.categories || []).find(x => x.id === id)?.label || String(id || '').replace(/-/g, ' ').toUpperCase();
+  }
+
   function normalizeData(source) {
     const value = clone(source || {});
     value.profile ||= {};
@@ -67,6 +128,26 @@
     value.games ||= [];
     value.anime ||= [];
     value.links ||= [];
+    if (!value.profile.contact) value.profile.contact = {};
+    if (!value.profile.discordProfile && value.profile.discord_profile) value.profile.discordProfile = value.profile.discord_profile;
+    if (!value.profile.liveWallpaper && value.profile.discordProfile?.liveWallpaper) value.profile.liveWallpaper = clone(value.profile.discordProfile.liveWallpaper);
+    value.categories = normalizeCategoryLibrary(value.categories);
+
+    value.games.forEach(item => {
+      item.categories = itemCategories('game', item, value.categories);
+      item.category = item.categories[0] || 'rotation';
+      item.achievements = Array.isArray(item.achievements) ? item.achievements : (item.achievements ? [String(item.achievements)] : []);
+      item.rating = item.rating === '' || item.rating == null ? '' : Number(item.rating) || 0;
+      item.source = item.source || (item.steamAppId ? 'steam' : 'manual');
+      if (item.steamAppId && !item.steamUrl) item.steamUrl = `https://store.steampowered.com/app/${item.steamAppId}/`;
+    });
+    value.anime.forEach(item => {
+      item.categories = itemCategories('anime', item, value.categories);
+      const statusCategory = item.categories.find(id => ['watching','completed','planning','paused','dropped'].includes(id));
+      if (statusCategory) item.status = statusCategory.charAt(0).toUpperCase() + statusCategory.slice(1);
+      item.favorite = item.categories.includes('favorite') || Boolean(item.favorite);
+      if (item.favorite && !item.categories.includes('favorite')) item.categories.push('favorite');
+    });
     return value;
   }
 
@@ -74,8 +155,12 @@
   const content = $('#modal-content');
   const toast = $('#toast');
   let animeFilter = 'all';
+  let gameFilter = 'all';
+  let gameSearchQuery = '';
+  let animeSearchQuery = '';
   let currentPosterData = '';
   let currentPosterTarget = null;
+  const steamSearchCache = new Map();
 
   const esc = (value = '') => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
   const safeUrl = value => String(value || '').trim();
@@ -139,7 +224,7 @@
     if (!ownerMode) return showToast('Owner mode is locked');
     if (cloudEnabled && cloudSession) {
       try {
-        const { error } = await supabaseClient.from('lucian_site_data').update({ data, updated_at: new Date().toISOString() }).eq('id', 1);
+        const { error } = await supabaseClient.from('lucian_site_data').update({ data: normalizeData(data), updated_at: new Date().toISOString() }).eq('id', 1);
         if (error) throw error;
         try { localStorage.removeItem(KEY); } catch (_) {}
         renderAll();
@@ -176,18 +261,19 @@
 
   function renderProfile() {
     const p = data.profile || {};
-    $('#profile-name').textContent = p.name || 'Lucian Vex';
-    $('#profile-bio').textContent = p.bio || '';
-    $('#discord').textContent = p.discord || '';
-    $('#email').textContent = p.email || '';
+    const setText = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+    setText('#profile-name', p.name || 'Lucian Vex');
+    setText('#profile-bio', p.bio || '');
+    setText('#discord', p.discord || '');
+    setText('#email', p.email || '');
     const contact = p.contact || {};
     const contactTitle = $('#contact-title');
     const contactText = $('#contact-text');
     if (contactTitle) contactTitle.innerHTML = esc(contact.title || 'Contact') + ' <i>me</i>';
     if (contactText) contactText.textContent = contact.text || 'Open to conversations, collaborations, games, projects, or just a good conversation.';
-    $('#stat-skills').textContent = data.skills.length;
-    $('#stat-games').textContent = data.games.length;
-    $('#stat-anime').textContent = data.anime.length;
+    setText('#stat-skills', data.skills.length);
+    setText('#stat-games', data.games.length);
+    setText('#stat-anime', data.anime.length);
     const chips = Array.isArray(p.chips) && p.chips.length ? p.chips : ['SELF-TAUGHT','CREATIVE','GAMER','BUILDER'];
     const chipEl = $('#profile-chips');
     if (chipEl) chipEl.innerHTML = chips.map(c => `<span>${esc(c)}</span>`).join('');
@@ -195,12 +281,13 @@
 
   function renderSkills() {
     const el = $('#skills-grid');
+    if (!el) return;
     if (!data.skills.length) { el.innerHTML = '<div class="empty">No skills yet. Use ADD SKILL to create one.</div>'; return; }
     el.innerHTML = data.skills.map((item, i) => `
-      <article class="card skill-card">
+      <article class="card skill-card" id="skill-${i}">
         <div class="skill-top"><span class="skill-name">${esc(item.name)}</span><span class="level">${clamp(item.level,0,100)}%</span></div>
         <div class="bar"><span style="width:${clamp(item.level,0,100)}%"></span></div>
-        <p class="card-desc">${esc(item.desc)}</p>
+        <p class="card-desc">${esc(item.desc || '')}</p>
         <div class="card-actions" style="padding:16px 0 0"><span></span><span>
           <button class="icon-btn owner-only" data-edit="skill" data-i="${i}" type="button">EDIT</button>
           <button class="icon-btn owner-only" data-del="skill" data-i="${i}" type="button">DELETE</button>
@@ -208,42 +295,98 @@
       </article>`).join('');
   }
 
+  function normalizeGameCategory(item) {
+    return itemCategories('game', item)[0] || 'rotation';
+  }
+
+  function renderCategoryFilters(type) {
+    const toolbar = type === 'game' ? $('.game-toolbar') : $('.anime-toolbar');
+    if (!toolbar) return;
+    const used = new Set();
+    (data[type === 'game' ? 'games' : 'anime'] || []).forEach(item => itemCategories(type, item).forEach(id => used.add(id)));
+    const cats = (data.categories || []).filter(cat => used.has(cat.id));
+    const filter = type === 'game' ? gameFilter : animeFilter;
+    const allLabel = type === 'game' ? 'ALL GAMES' : 'ALL ANIME';
+    toolbar.innerHTML = `<button class="filter ${filter==='all'?'active':''}" data-category-filter="all" type="button">${allLabel}</button>` + cats.map(cat => `<button class="filter ${filter===cat.id?'active':''}" data-category-filter="${esc(cat.id)}" type="button">${esc(cat.label)}</button>`).join('');
+  }
+
+  function gameCategoryLabel(category) {
+    return categoryLabel(category) || 'IN ROTATION';
+  }
+
+  const GAME_PAGE_SIZE = 48;
+  const ANIME_PAGE_SIZE = 48;
+  let gameVisibleLimit = GAME_PAGE_SIZE;
+  let animeVisibleLimit = ANIME_PAGE_SIZE;
+
   function renderGames() {
     const el = $('#game-grid');
-    if (!data.games.length) { el.innerHTML = '<div class="empty">No games yet. Use ADD GAME to create one.</div>'; return; }
-    el.innerHTML = data.games.map((item, i) => `
-      <article class="card">
-        <div class="poster-frame"><img class="poster" src="${esc(item.poster || '')}" alt="${esc(item.title || '')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"></div>
+    if (!el) return;
+    renderCategoryFilters('game');
+    if (!data.games.length) { el.innerHTML = '<div class="empty">No games yet. Use ADD GAME or STEAM SEARCH to create one.</div>'; updateLoadMore('game', false); return; }
+    const filtered = data.games.filter(item => { const q=gameSearchQuery; const hay=[item.title,item.status,item.type,item.goal,(item.achievements||[]).join(' '),itemCategories('game',item).map(categoryLabel).join(' ')].join(' ').toLowerCase(); return (gameFilter === 'all' || itemCategories('game', item).includes(gameFilter)) && (!q || hay.includes(q)); });
+    const gameCountLabel=$('#game-count-label'); if(gameCountLabel) gameCountLabel.textContent=`${filtered.length} / ${data.games.length} GAMES`;
+    if (!filtered.length) { el.innerHTML = '<div class="empty">Nothing matches this game view.</div>'; updateLoadMore('game', false); return; }
+    const visible = filtered.slice(0, gameVisibleLimit);
+    el.innerHTML = visible.map(item => {
+      const i = data.games.indexOf(item);
+      const categories = itemCategories('game', item);
+      const achievements = Array.isArray(item.achievements) ? item.achievements : [];
+      const categoryTags = categories.length ? categories.map(id => `<span class="tag">${esc(gameCategoryLabel(id))}</span>`).join('') : '<span class="tag">IN ROTATION</span>';
+      const rating = item.rating === '' || item.rating == null ? '—' : Number(item.rating).toFixed(1);
+      return `
+      <article class="card archive-card" id="game-${i}">
+        <div class="poster-frame"><img class="poster" src="${esc(item.poster || '')}" alt="${esc(item.title || '')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"><span class="source-badge">${item.source==='steam'?'STEAM':'MANUAL'}</span></div>
         <div class="card-body">
-          <span class="tag">${esc(item.status)}${item.type ? ' // ' + esc(item.type) : ''}</span>
-          <h3>${esc(item.title)}</h3>
+          <div class="category-tags">${categoryTags}</div>
+          <h3>${esc(item.title || 'Untitled')}</h3>
           <div class="game-meta"><span>${esc(item.rank || 'No rank')}</span><span>${clamp(item.progress,0,100)}%</span></div>
           <div class="progress-line"><span style="width:${clamp(item.progress,0,100)}%"></span></div>
-          <p class="card-desc" style="margin-top:12px">${esc(item.goal || '')}</p>
+          <div class="rating-line"><span>LUCian RATING</span><strong>${rating === '—' ? 'NOT RATED' : `${rating}/10`}</strong></div>
+          ${achievements.length ? `<p class="card-desc game-achievements"><strong>${achievements.length}</strong> achievement${achievements.length===1?'':'s'} logged</p>` : ''}
+          ${item.goal ? `<p class="card-desc" style="margin-top:9px">${esc(item.goal)}</p>` : ''}
+          <button class="details-btn" data-details="game" data-i="${i}" type="button">VIEW DETAILS ↗</button>
         </div>
         <div class="card-actions"><span></span><span>
+          <button class="icon-btn owner-only ${itemCategories('game', item).includes('favorite')?'active':''}" data-fav="game" data-i="${i}" type="button">${itemCategories('game', item).includes('favorite')?'♥':'♡'}</button>
           <button class="icon-btn owner-only" data-edit="game" data-i="${i}" type="button">EDIT</button>
           <button class="icon-btn owner-only" data-del="game" data-i="${i}" type="button">DELETE</button>
         </span></div>
-      </article>`).join('');
+      </article>`;
+    }).join('');
+    updateLoadMore('game', filtered.length > visible.length);
+  }
+
+  function normalizeAnimeStatus(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    const map = { watching: 'Watching', completed: 'Completed', planning: 'Planning', paused: 'Paused', dropped: 'Dropped', favorite: 'Favorite', favourites: 'Favorite', favorites: 'Favorite' };
+    return map[raw] || String(value || 'Planning').trim() || 'Planning';
   }
 
   function renderAnime() {
-    const visible = data.anime.filter(item => animeFilter === 'all' || (animeFilter === 'Favorite' ? item.favorite : item.status === animeFilter));
     const el = $('#anime-grid');
-    if (!visible.length) { el.innerHTML = '<div class="empty">Nothing in this category yet.</div>'; return; }
+    if (!el) return;
+    renderCategoryFilters('anime');
+    if (!data.anime.length) { el.innerHTML = '<div class="empty">No anime yet. Use ANILIST SEARCH or ADD MANUALLY to create one.</div>'; updateLoadMore('anime', false); return; }
+    const filtered = data.anime.filter(item => { const q=animeSearchQuery; const hay=[item.title,item.status,item.notes,itemCategories('anime',item).map(categoryLabel).join(' ')].join(' ').toLowerCase(); return (animeFilter === 'all' || itemCategories('anime', item).includes(animeFilter)) && (!q || hay.includes(q)); });
+    const animeCountLabel=$('#anime-count-label'); if(animeCountLabel) animeCountLabel.textContent=`${filtered.length} / ${data.anime.length} ANIME`;
+    if (!filtered.length) { el.innerHTML = '<div class="empty">Nothing matches this anime view.</div>'; updateLoadMore('anime', false); return; }
+    const visible = filtered.slice(0, animeVisibleLimit);
     el.innerHTML = visible.map(item => {
       const i = data.anime.indexOf(item);
       const pct = item.totalEpisodes ? clamp(Math.round((item.episode || 0) / item.totalEpisodes * 100), 0, 100) : 0;
+      const categories = itemCategories('anime', item);
+      const categoryTags = categories.length ? categories.map(id => `<span class="tag">${esc(categoryLabel(id))}</span>`).join('') : '<span class="tag">PLANNING</span>';
       return `
-      <article class="card anime-card">
-        <div class="poster-frame anime"><img class="poster" src="${esc(item.poster || '')}" alt="${esc(item.title || '')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"></div>
+      <article class="card anime-card archive-card" id="anime-${i}">
+        <div class="poster-frame anime"><img class="poster" src="${esc(item.poster || '')}" alt="${esc(item.title || '')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"><span class="source-badge">${item.anilistId?'ANILIST':'MANUAL'}</span></div>
         <div class="card-body">
-          <span class="tag">${esc(item.status)}${item.favorite ? ' // FAVORITE' : ''}</span>
-          <h3>${esc(item.title)}</h3>
-          <div class="anime-meta"><span>EP ${item.episode || 0}/${item.totalEpisodes || '?'}</span><span>${item.score ? esc(item.score) + '/10' : 'NO SCORE'}</span></div>
+          <div class="category-tags">${categoryTags}</div>
+          <h3>${esc(item.title || 'Untitled')}</h3>
+          <div class="anime-meta"><span>EP ${item.episode || 0}/${item.totalEpisodes || '?'}</span><span>${item.score !== '' && item.score != null ? esc(item.score) + '/10' : 'NO SCORE'}</span></div>
           <div class="progress-line"><span style="width:${pct}%"></span></div>
           <p class="card-desc" style="margin-top:10px">${esc(item.notes || '')}</p>
+          <button class="details-btn" data-details="anime" data-i="${i}" type="button">VIEW DETAILS ↗</button>
         </div>
         <div class="card-actions"><button class="favorite owner-only ${item.favorite ? 'active' : ''}" data-fav="anime" data-i="${i}" type="button" aria-label="${item.favorite ? 'Remove favorite' : 'Add favorite'}">${item.favorite ? '♥' : '♡'}</button><span>
           <button class="icon-btn owner-only" data-edit="anime" data-i="${i}" type="button">EDIT</button>
@@ -251,6 +394,7 @@
         </span></div>
       </article>`;
     }).join('');
+    updateLoadMore('anime', filtered.length > visible.length);
   }
 
   const ICON_SLUGS = {
@@ -290,16 +434,45 @@
 
   function renderLinks() {
     const el = $('#links-grid');
+    if (!el) return;
     if (!data.links.length) { el.innerHTML = '<div class="empty">No connections yet. Use ADD CONNECTION to create one.</div>'; return; }
     el.innerHTML = data.links.map((item, i) => `
-      <article class="card link-card">
-        <div class="link-icon">${iconMarkup(item)}</div>
-        <div style="flex:1"><a href="${esc(safeUrl(item.url))}" target="_blank" rel="noopener noreferrer">${esc(item.name)}</a><p>${esc(item.role || '')}</p></div>
-        <div><button class="icon-btn owner-only" data-edit="link" data-i="${i}" type="button">EDIT</button> <button class="icon-btn owner-only" data-del="link" data-i="${i}" type="button">DELETE</button></div>
+      <article class="card link-card" id="link-${i}" data-href="${esc(safeUrl(item.url))}" role="link" tabindex="0" aria-label="Open ${esc(item.name)}">
+        <a class="link-card-main" href="${esc(safeUrl(item.url))}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(item.name)}">
+          <div class="link-icon">${iconMarkup(item)}</div>
+          <div style="flex:1"><strong>${esc(item.name)}</strong><p>${esc(item.role || '')}</p></div>
+          <span class="link-open-arrow">↗</span>
+        </a>
+        <div class="link-card-actions"><button class="icon-btn owner-only" data-edit="link" data-i="${i}" type="button">EDIT</button> <button class="icon-btn owner-only" data-del="link" data-i="${i}" type="button">DELETE</button></div>
       </article>`).join('');
   }
 
-  function renderAll() { renderProfile(); renderDiscordProfile(); renderSkills(); renderGames(); renderAnime(); renderLinks(); setupReveal(); applyLiveWallpaper(); }
+  function updateLoadMore(type, show) {
+    const id = type === 'game' ? 'game-load-more' : 'anime-load-more';
+    const btn = document.getElementById(id);
+    if (btn) btn.hidden = !show;
+  }
+
+  function renderHomeDashboard() {
+    const set = (id, value, html=false) => { const el=$(id); if (!el) return; html ? el.innerHTML=value : el.textContent=value; };
+    set('#home-games-count', data.games.length); set('#home-anime-count', data.anime.length); set('#home-skills-count', data.skills.length);
+    const currentGames = data.games.filter(g => itemCategories('game', g).includes('rotation')).slice(0,3);
+    const currentAnime = data.anime.filter(a => itemCategories('anime', a).includes('watching')).slice(0,3);
+    const renderMini = (items, type) => items.length ? items.map((item) => `<article class="mini-archive"><div class="mini-cover"><img src="${esc(item.poster || '')}" alt="" loading="lazy"></div><div><strong>${esc(item.title)}</strong><small>${type==='game' ? `${clamp(item.progress,0,100)}% progress` : `EP ${item.episode||0}/${item.totalEpisodes||'?'}`}</small></div></article>`).join('') : '<div class="empty">Nothing here yet.</div>';
+    set('#home-current-games', renderMini(currentGames,'game'), true); set('#home-current-anime', renderMini(currentAnime,'anime'), true);
+    const updates=[];
+    data.games.forEach((item,i)=>{if(item.updatedAt) updates.push({type:'GAME',title:item.title,time:item.updatedAt,index:i,page:'gaming.html'});});
+    data.anime.forEach((item,i)=>{if(item.updatedAt) updates.push({type:'ANIME',title:item.title,time:item.updatedAt,index:i,page:'anime.html'});});
+    data.skills.forEach((item,i)=>{if(item.updatedAt) updates.push({type:'SKILL',title:item.name,time:item.updatedAt,index:i,page:'skills.html'});});
+    const list=updates.sort((a,b)=>new Date(b.time)-new Date(a.time)).slice(0,8);
+    set('#recent-updates', list.length ? list.map(u=>`<button class="update-row" data-deeplink="${u.page}#${u.type.toLowerCase()}-${u.index}" type="button"><span>${esc(u.type)}</span><strong>${esc(u.title)}</strong><small>${formatRelative(u.time)}</small></button>`).join('') : '<div class="empty">Your update history will appear here as you edit the archive.</div>', true);
+  }
+
+  function formatRelative(value) {
+    const diff=Math.max(0,Date.now()-new Date(value).getTime()); const mins=Math.floor(diff/60000); if(mins<1) return 'JUST NOW'; if(mins<60) return `${mins}M AGO`; const hrs=Math.floor(mins/60); if(hrs<24) return `${hrs}H AGO`; const days=Math.floor(hrs/24); return `${days}D AGO`;
+  }
+
+  function renderAll() { renderProfile(); renderDiscordProfile(); renderSkills(); renderGames(); renderAnime(); renderLinks(); if(PAGE==='home') renderHomeDashboard(); setupReveal(); applyLiveWallpaper(); applyOwnerVisibility(); }
 
   function getItem(type, index) { return index >= 0 ? getArray(type)[index] : {}; }
 
@@ -314,6 +487,99 @@
         <p class="muted-note">Choose a local image for your current browser, or paste a public image URL when you want other visitors to see the same poster.</p>
         <div class="poster-preview" id="poster-preview"><img id="poster-preview-img" src="" alt=""><span class="muted-note">Poster attached</span></div>
       </div>`;
+  }
+
+  function categoryPickerHTML(type, item) {
+    const selected = new Set(itemCategories(type, item));
+    const categories = data.categories || [];
+    if (!categories.length) return '';
+    return `<div class="form-field"><label>CATEGORIES</label><div class="category-picker">${categories.map(cat => `<label class="category-option"><input type="checkbox" name="item-category" value="${esc(cat.id)}" ${selected.has(cat.id) ? 'checked' : ''}><span>${esc(cat.label)}</span></label>`).join('')}</div><p class="muted-note">Pick one or multiple categories. Use CATEGORY SYSTEM in the top bar to create your own.</p></div>`;
+  }
+
+  function selectedCategories() {
+    return $$('input[name="item-category"]:checked').map(input => input.value);
+  }
+
+  function openCategoryManager() {
+    if (!ownerMode) return showToast('Owner mode is locked');
+    openModal(`<p class="eyebrow">UNIVERSAL // CATEGORY SYSTEM</p><h2 id="modal-title">Manage archive categories</h2><p class="muted-note">These categories are shared by Games and Anime. A single item can belong to multiple categories.</p><div class="category-manager-list" id="category-manager-list"></div><div class="form-grid two"><div class="form-field"><label>NEW CATEGORY</label><input id="new-category-name" placeholder="MASTERPIECES"></div><button class="btn primary" id="add-category" type="button">＋ CREATE CATEGORY</button></div><button class="btn ghost" id="close-category-manager" type="button">DONE</button>`);
+    const renderList = () => {
+      const list = $('#category-manager-list');
+      list.innerHTML = (data.categories || []).map(cat => `<div class="category-manager-row"><span>${esc(cat.label)}</span>${cat.builtin ? '<small>BUILT-IN</small>' : `<button class="icon-btn" data-delete-category="${esc(cat.id)}" type="button">REMOVE</button>`}</div>`).join('');
+    };
+    renderList();
+    $('#add-category').addEventListener('click', async () => {
+      const label = $('#new-category-name').value.trim();
+      const idBase = slugCategory(label);
+      if (!label || !idBase) return showToast('Enter a category name');
+      if ((data.categories || []).some(x => x.id === idBase || x.label.toLowerCase() === label.toLowerCase())) return showToast('Category already exists');
+      let id = `custom-${idBase}`;
+      let suffix = 2;
+      while (data.categories.some(x => x.id === id)) id = `custom-${idBase}-${suffix++}`;
+      data.categories.push({ id, label: label.toUpperCase(), builtin: false });
+      await persist('Category added');
+      $('#new-category-name').value = '';
+      renderList(); renderCategoryFilters('game'); renderCategoryFilters('anime');
+    });
+    $('#category-manager-list').addEventListener('click', async event => {
+      const btn = event.target.closest('[data-delete-category]');
+      if (!btn) return;
+      const id = btn.dataset.deleteCategory;
+      if (!confirm(`Remove category "${categoryLabel(id)}"? Items will keep their other categories.`)) return;
+      data.categories = data.categories.filter(x => x.id !== id);
+      data.games.forEach(item => { item.categories = itemCategories('game', item).filter(x => x !== id); item.category = item.categories[0] || 'rotation'; });
+      data.anime.forEach(item => { item.categories = itemCategories('anime', item).filter(x => x !== id); item.favorite = item.categories.includes('favorite'); });
+      await persist('Category removed');
+      renderList(); renderAll();
+    });
+    $('#close-category-manager').addEventListener('click', closeModal);
+  }
+
+  function makeGameFromSteam(game) {
+    const appid = game.steam_appid || game.appid || game.id || '';
+    const genres = Array.isArray(game.genres) ? game.genres.map(x => x.description || x).filter(Boolean).slice(0,3).join(' • ') : '';
+    return {
+      title: game.name || 'STEAM GAME', status: 'NOT STARTED', type: genres || 'Steam',
+      poster: game.header_image || game.large_capsule_image || game.tiny_image || (appid ? `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg` : ''),
+      rank: 'Not played', progress: 0, category: 'want', categories: ['want'], rating: '', goal: (game.short_description || 'Start the game.').replace(/<[^>]*>/g,''),
+      achievements: [], steamAppId: appid, steamUrl: appid ? `https://store.steampowered.com/app/${appid}/` : '', source: 'steam', steamPrice: game.price?.final_formatted || '', updatedAt: new Date().toISOString()
+    };
+  }
+
+  async function steamSearch() {
+    if (!ownerMode) return showToast('Owner mode is locked');
+    openModal(`<p class="eyebrow">STEAM // GAME IMPORT</p><h2 id="modal-title">Search Steam</h2><p class="muted-note">Search the Steam catalog, preview the game and import it. Games outside Steam can still be added manually.</p><div class="search-row"><input id="steam-q" placeholder="Search game..." autocomplete="off"><button class="btn primary" id="steam-go" type="button">SEARCH</button></div><div id="steam-results" class="search-results"></div>`);
+    const run = async () => {
+      const queryText = $('#steam-q').value.trim(); if (!queryText) return showToast('Type a game name');
+      $('#steam-results').innerHTML = '<div class="empty">Searching Steam...</div>';
+      try {
+        let json=null, response=await fetch(`/.netlify/functions/steam-search?term=${encodeURIComponent(queryText)}`, {headers:{'Accept':'application/json'}});
+        if (response.ok) json=await response.json();
+        if (!json) {
+          response=await fetch(`https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(queryText)}&cc=us&l=english`);
+          if (!response.ok) throw new Error(`Steam search HTTP ${response.status}`); json=await response.json();
+        }
+        const results=Array.isArray(json.items) ? json.items.slice(0,10) : [];
+        steamSearchCache.clear(); results.forEach(item=>steamSearchCache.set(String(item.id),item));
+        if(!results.length){$('#steam-results').innerHTML='<div class="empty">No Steam results found.</div>';return;}
+        $('#steam-results').innerHTML=results.map(item=>`<div class="search-result"><img src="${esc(item.tiny_image||item.large_capsule_image||item.header_image||'')}" alt=""><div><strong>${esc(item.name)}</strong><small>App ID ${esc(item.id)}${item.price?.final_formatted?` • ${esc(item.price.final_formatted)}`:''}</small></div><button class="btn primary small" data-add-steam="${esc(item.id)}" type="button">IMPORT</button></div>`).join('');
+      } catch(error){ console.error(error); $('#steam-results').innerHTML=`<div class="empty">Steam search is unavailable right now. You can still add the game manually or <a href="https://store.steampowered.com/search/?term=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">open Steam Search ↗</a>.</div>`; }
+    };
+    $('#steam-go')?.addEventListener('click',run); $('#steam-q')?.addEventListener('keydown',e=>{if(e.key==='Enter')run();});
+  }
+
+  async function addFromSteam(appid) {
+    if (!ownerMode) return showToast('Owner mode is locked');
+    const cached = steamSearchCache.get(String(appid)); if (!cached) return showToast('Steam result expired — search again');
+    let imported = makeGameFromSteam(cached);
+    if (data.games.some(g => String(g.steamAppId || '') === String(appid))) { closeModal(); return showToast('That Steam game is already in your archive'); }
+    try {
+      try {
+        const response = await fetch(`/.netlify/functions/steam-search?appid=${encodeURIComponent(appid)}`);
+        if (response.ok) { const json=await response.json(); if(json.game) imported=makeGameFromSteam({...cached,...json.game}); }
+      } catch (_) {}
+      data.games.push(imported); await persist('Steam game added'); closeModal(); location.href=pageUrl('gaming','#gaming');
+    } catch(error){ showToast('Could not import that Steam game'); console.error(error); }
   }
 
   function openManager(type, index = -1) {
@@ -362,9 +628,12 @@
         <div class="form-field"><label>TYPE</label><input id="f-type" value="${esc(item.type)}" placeholder="Competitive"></div>
         <div class="form-field"><label>RANK</label><input id="f-rank" value="${esc(item.rank)}" placeholder="Silver 2"></div>
         <div class="form-field"><label>PROGRESS %</label><input id="f-progress" type="number" min="0" max="100" value="${item.progress ?? 0}"></div>
+        <div class="form-field"><label>LUCIAN RATING /10</label><input id="f-rating" type="number" min="0" max="10" step="0.5" value="${item.rating ?? ''}"></div>
       </div>
+      ${categoryPickerHTML('game', item)}
       ${posterFields(item)}
       <div class="form-field"><label>GOAL / NOTE</label><textarea id="f-goal">${esc(item.goal || '')}</textarea></div>
+      <div class="form-field"><label>ACHIEVEMENTS / MILESTONES</label><textarea id="f-achievements" placeholder="Finished story • Reached Elite rank • Unlocked secret ending">${esc(Array.isArray(item.achievements) ? item.achievements.join(' • ') : (item.achievements || ''))}</textarea><p class="muted-note">Separate multiple achievements with •</p></div>
       <button class="btn primary form-submit" data-save-manager="game" data-index="${index}" type="button">SAVE GAME</button>`;
 
     if (type === 'link') html = `
@@ -386,13 +655,14 @@
         <div class="form-field"><label>SCORE /10</label><input id="f-score" type="number" min="0" max="10" step="0.5" value="${item.score ?? ''}"></div>
         <div class="form-field"><label>ANILIST ID (OPTIONAL)</label><input id="f-anilist" value="${item.anilistId || ''}" placeholder="Media ID"></div>
       </div>
+      ${categoryPickerHTML('anime', item)}
       <label class="check-row"><input id="f-favorite" type="checkbox" ${item.favorite ? 'checked' : ''}> Mark as favorite</label>
       ${posterFields(item)}
       <div class="form-field"><label>NOTES</label><textarea id="f-notes" placeholder="Personal note">${esc(item.notes || '')}</textarea></div>
       <button class="btn primary form-submit" data-save-manager="anime" data-index="${index}" type="button">SAVE ANIME</button>`;
 
     openModal(html);
-    if (type === 'anime') $('#f-status').value = item.status || 'Planning';
+    if (type === 'anime') $('#f-status').value = normalizeAnimeStatus(item.status);
     if (type === 'link') $('#f-platform').value = iconSlug(item) || '';
     setupPosterPicker(item.poster || '');
   }
@@ -447,7 +717,7 @@
       const profile = data.profile || (data.profile = {});
       profile.name = $('#f-profile-name').value.trim() || 'Lucian Vex';
       profile.bio = $('#f-profile-bio').value.trim();
-      profile.chips = $('#f-profile-chips').value.split('•').map(v => v.trim().toUpperCase()).filter(Boolean).slice(0, 8);
+      profile.chips = $('#f-profile-chips').value.split('•').map(v => v.trim().toUpperCase()).filter(Boolean).slice(0, 8); profile.updatedAt = new Date().toISOString();
       persist('About Me saved');
       closeModal();
       return;
@@ -458,26 +728,26 @@
       profile.contact.title = $('#f-contact-title').value.trim() || 'Contact';
       profile.contact.text = $('#f-contact-text').value.trim() || 'Open to conversations, collaborations, games, projects, or just a good conversation.';
       profile.discord = $('#f-contact-discord').value.trim();
-      profile.email = $('#f-contact-email').value.trim();
+      profile.email = $('#f-contact-email').value.trim(); profile.updatedAt = new Date().toISOString();
       persist('Contact info saved');
       closeModal();
       return;
     }
     if (type === 'skill') {
-      item.name = $('#f-name').value.trim(); item.level = clamp($('#f-level').value,0,100); item.desc = $('#f-desc').value.trim();
+      item.name = $('#f-name').value.trim(); item.level = clamp($('#f-level').value,0,100); item.desc = $('#f-desc').value.trim(); item.updatedAt = new Date().toISOString();
       if (!item.name) return showToast('Enter a skill name');
     }
     if (type === 'game') {
-      item.title = $('#f-title').value.trim(); item.status = $('#f-status').value.trim(); item.type = $('#f-type').value.trim(); item.rank = $('#f-rank').value.trim(); item.progress = clamp($('#f-progress').value,0,100); item.goal = $('#f-goal').value.trim();
+      item.title = $('#f-title').value.trim(); item.status = $('#f-status').value.trim(); item.type = $('#f-type').value.trim(); item.rank = $('#f-rank').value.trim(); item.progress = clamp($('#f-progress').value,0,100); item.rating = $('#f-rating')?.value === '' ? '' : clamp($('#f-rating')?.value,0,10); item.categories = selectedCategories(); if (!item.categories.length) item.categories = ['rotation']; item.category = item.categories[0]; item.goal = $('#f-goal').value.trim(); item.achievements = $('#f-achievements').value.split('•').map(v => v.trim()).filter(Boolean).slice(0, 30); item.source = item.source || 'manual'; item.updatedAt = new Date().toISOString();
       if (currentPosterData) item.poster = currentPosterData; else item.poster = safeUrl($('#f-poster').value);
       if (!item.title) return showToast('Enter a game title');
     }
     if (type === 'link') {
-      item.name = $('#f-name').value.trim(); const platform = $('#f-platform').value; item.icon = platform || $('#f-icon').value.trim(); item.role = $('#f-role').value.trim(); item.url = safeUrl($('#f-url').value);
+      item.name = $('#f-name').value.trim(); const platform = $('#f-platform').value; item.icon = platform || $('#f-icon').value.trim(); item.role = $('#f-role').value.trim(); item.url = safeUrl($('#f-url').value); item.updatedAt = new Date().toISOString();
       if (!item.name || !item.url) return showToast('Enter name and URL');
     }
     if (type === 'anime') {
-      item.title = $('#f-title').value.trim(); item.status = $('#f-status').value; item.episode = Math.max(0, Number($('#f-episode').value)||0); item.totalEpisodes = Math.max(0, Number($('#f-total').value)||0); item.score = $('#f-score').value === '' ? '' : clamp($('#f-score').value,0,10); item.anilistId = $('#f-anilist').value.trim(); item.favorite = $('#f-favorite').checked; item.notes = $('#f-notes').value.trim();
+      item.title = $('#f-title').value.trim(); item.updatedAt = new Date().toISOString(); const chosenCategories = selectedCategories().filter(id => !['watching','completed','planning','paused','dropped'].includes(id)); const statusCategory = String($('#f-status').value || 'Planning').trim().toLowerCase(); const normalizedStatus = ['watching','completed','planning','paused','dropped'].includes(statusCategory) ? statusCategory : 'planning'; item.categories = [normalizedStatus, ...chosenCategories.filter(id => id !== normalizedStatus)]; if ($('#f-favorite').checked && !item.categories.includes('favorite')) item.categories.push('favorite'); item.status = normalizedStatus.charAt(0).toUpperCase() + normalizedStatus.slice(1); item.episode = Math.max(0, Number($('#f-episode').value)||0); item.totalEpisodes = Math.max(0, Number($('#f-total').value)||0); item.score = $('#f-score').value === '' ? '' : clamp($('#f-score').value,0,10); item.anilistId = $('#f-anilist').value.trim(); item.favorite = item.categories.includes('favorite'); item.notes = $('#f-notes').value.trim();
       if (currentPosterData) item.poster = currentPosterData; else item.poster = safeUrl($('#f-poster').value);
       if (!item.title) return showToast('Enter an anime title');
     }
@@ -513,10 +783,10 @@
       const json = await response.json();
       const item = json.data?.Media;
       if (!item) throw new Error('Anime not found');
-      data.anime.push({ title:item.title.english || item.title.romaji, status:'Planning', episode:0, totalEpisodes:item.episodes || 0, score:'', favorite:false, notes:'', anilistId:item.id, poster:item.coverImage?.large || '' });
+      data.anime.push({ title:item.title.english || item.title.romaji, status:'Planning', categories:['planning'], episode:0, totalEpisodes:item.episodes || 0, score:'', favorite:false, notes:'', anilistId:item.id, poster:item.coverImage?.large || '', updatedAt:new Date().toISOString() });
       persist('Anime added');
       closeModal();
-      location.hash = '#anime';
+      location.href = pageUrl('anime','#anime');
     } catch (error) { showToast('Could not add anime'); console.error(error); }
   }
 
@@ -721,6 +991,7 @@
   };
 
   function wallpaperSettings() {
+    if (!data.profile.liveWallpaper && data.profile.discordProfile?.liveWallpaper) data.profile.liveWallpaper = clone(data.profile.discordProfile.liveWallpaper);
     data.profile.liveWallpaper ||= { mode: 'cyberflow', imageUrl: '', videoUrl: '', opacity: 0.32, blur: 0, tint: 0.14 };
     const w = data.profile.liveWallpaper;
     w.mode ||= 'cyberflow'; w.imageUrl ||= ''; w.videoUrl ||= '';
@@ -754,27 +1025,16 @@
   }
 
   function applyLiveWallpaper() {
-    const layer = $('#live-wallpaper-layer');
-    const video = $('#live-wallpaper-video');
-    if (!layer) return;
+    const layer = $('#live-wallpaper-layer'); const video = $('#live-wallpaper-video'); if (!layer) return;
     const w = wallpaperSettings();
-    layer.dataset.mode = w.mode;
-    layer.style.setProperty('--wallpaper-opacity', String(w.opacity));
-    layer.style.setProperty('--wallpaper-blur', `${w.blur}px`);
-    layer.style.setProperty('--wallpaper-tint', String(w.tint));
-    layer.style.backgroundImage = w.imageUrl ? `url("${String(w.imageUrl).replace(/"/g, '\\"')}")` : '';
-    layer.classList.toggle('has-custom-image', !!w.imageUrl);
-    if (video) {
-      const src = safeUrl(w.videoUrl);
-      const useVideo = !!src && w.mode === 'video';
-      if (useVideo) {
-        if (video.src !== src) { video.src = src; video.load(); }
-        video.style.display = 'block'; video.play().catch(() => {});
-      } else {
-        video.pause(); video.removeAttribute('src'); video.load(); video.style.display = 'none';
-      }
+    layer.dataset.mode=w.mode; layer.style.setProperty('--wallpaper-opacity',String(w.opacity)); layer.style.setProperty('--wallpaper-blur',`${w.blur}px`); layer.style.setProperty('--wallpaper-tint',String(w.tint));
+    const image=String(w.imageUrl||'').trim(); layer.style.backgroundImage=image ? `url("${image.replace(/"/g,'\"')}")` : '';
+    layer.classList.toggle('has-custom-image',!!image); layer.classList.toggle('disabled',w.mode==='none'); layer.setAttribute('aria-hidden','true');
+    if(video){
+      const src=String(w.videoUrl||'').trim(); const useVideo=!!src && w.mode==='video';
+      if(useVideo){ if(video.dataset.loadedSrc!==src){video.dataset.loadedSrc=src; video.src=src; video.load();} video.style.display='block'; const playPromise=video.play(); if(playPromise?.catch) playPromise.catch(()=>{}); }
+      else { video.pause(); video.removeAttribute('src'); video.removeAttribute('data-loaded-src'); video.style.display='none'; }
     }
-    layer.classList.toggle('disabled', w.mode === 'none');
   }
 
   function openThemeManager() {
@@ -882,15 +1142,16 @@
       ww.opacity=Number($('#wallpaper-opacity')?.value ?? ww.opacity);
       ww.blur=Number($('#wallpaper-blur')?.value ?? ww.blur);
       ww.tint=Number($('#wallpaper-tint')?.value ?? ww.tint);
-      applyLiveWallpaper();
+      $$('#nav a').forEach(link => { try { const path=new URL(link.href,location.href).pathname.split('/').pop()||'index.html'; link.classList.toggle('active',path===location.pathname.split('/').pop() || (PAGE==='home'&&path==='index.html')); } catch(_){} });
+  applyLiveWallpaper();
       if(refreshStage){
         const info=WALLPAPER_MODES[ww.mode];
         if($('#wallpaper-stage-title')) $('#wallpaper-stage-title').textContent=ww.mode==='video'?'Custom Live Video':(info?.name||'Custom Background');
         if($('#wallpaper-stage-sub')) $('#wallpaper-stage-sub').textContent=ww.mode==='video'?'Your uploaded live wallpaper':(info?.sub||'Your custom backdrop');
       }
-      if($('#wallpaper-opacity-value')) $('#wallpaper-opacity-value').value = `${Math.round(ww.opacity*100)}%`;
-      if($('#wallpaper-blur-value')) $('#wallpaper-blur-value').value = `${ww.blur}px`;
-      if($('#wallpaper-tint-value')) $('#wallpaper-tint-value').value = `${Math.round(ww.tint*100)}%`;
+      if($('#wallpaper-opacity-value')) $('#wallpaper-opacity-value').textContent = `${Math.round(ww.opacity*100)}%`;
+      if($('#wallpaper-blur-value')) $('#wallpaper-blur-value').textContent = `${ww.blur}px`;
+      if($('#wallpaper-tint-value')) $('#wallpaper-tint-value').textContent = `${Math.round(ww.tint*100)}%`;
     };
 
     $('#wallpaper-image-file')?.addEventListener('change', async e => {
@@ -924,9 +1185,60 @@
 
   function mixHex(a,b,weight){const p=h=>{const x=h.replace('#','');return [parseInt(x.slice(0,2),16),parseInt(x.slice(2,4),16),parseInt(x.slice(4,6),16)]};const A=p(a),B=p(b);const r=A.map((v,i)=>Math.round(v+(B[i]-v)*weight));return '#'+r.map(v=>v.toString(16).padStart(2,'0')).join('');}
 
-  function toggleFavorite(index) {
-    const item = data.anime[index]; if (!item) return;
-    item.favorite = !item.favorite; persist(item.favorite ? 'Added to favorites' : 'Removed from favorites');
+
+  function openArchiveDetails(type, index) {
+    const arr=type==='game'?data.games:data.anime; const item=arr[index]; if(!item) return;
+    const cats=itemCategories(type,item); const title=type==='game'?item.title:item.title;
+    const categoryHtml=cats.length?cats.map(id=>`<span class="tag">${esc(categoryLabel(id))}</span>`).join(''):'<span class="tag">UNCATEGORIZED</span>';
+    if(type==='game'){
+      const achievements=Array.isArray(item.achievements)?item.achievements:[];
+      openModal(`<p class="eyebrow">GAME // ARCHIVE DETAILS</p><h2 id="modal-title">${esc(title)}</h2><div class="detail-layout"><div class="detail-cover"><img src="${esc(item.poster||'')}" alt="${esc(title)}"></div><div class="detail-copy"><div class="category-tags">${categoryHtml}</div><div class="detail-grid"><div><span>STATUS</span><strong>${esc(item.status||'NOT SET')}</strong></div><div><span>PROGRESS</span><strong>${clamp(item.progress,0,100)}%</strong></div><div><span>RANK</span><strong>${esc(item.rank||'—')}</strong></div><div><span>MY RATING</span><strong>${item.rating===''||item.rating==null?'NOT RATED':`${Number(item.rating).toFixed(1)}/10`}</strong></div></div><p>${esc(item.goal||'No personal note yet.')}</p>${achievements.length?`<div class="detail-list"><span class="eyebrow">ACHIEVEMENTS</span>${achievements.map((a,n)=>`<div><b>0${n+1}</b>${esc(a)}</div>`).join('')}</div>`:''}${item.steamUrl?`<a class="btn ghost" href="${esc(item.steamUrl)}" target="_blank" rel="noopener noreferrer">OPEN STEAM ↗</a>`:''}${ownerMode?`<button class="btn primary" data-edit="game" data-i="${index}" type="button">EDIT GAME</button>`:''}</div></div>`);
+    } else {
+      openModal(`<p class="eyebrow">ANIME // ARCHIVE DETAILS</p><h2 id="modal-title">${esc(title)}</h2><div class="detail-layout"><div class="detail-cover"><img src="${esc(item.poster||'')}" alt="${esc(title)}"></div><div class="detail-copy"><div class="category-tags">${categoryHtml}</div><div class="detail-grid"><div><span>STATUS</span><strong>${esc(item.status||'PLANNING')}</strong></div><div><span>EPISODES</span><strong>${item.episode||0}/${item.totalEpisodes||'?'}</strong></div><div><span>RATING</span><strong>${item.score===''||item.score==null?'NOT RATED':`${esc(item.score)}/10`}</strong></div><div><span>FAVORITE</span><strong>${item.favorite?'YES':'NO'}</strong></div></div><p>${esc(item.notes||'No personal note yet.')}</p>${item.anilistId?`<a class="btn ghost" href="https://anilist.co/anime/${encodeURIComponent(item.anilistId)}" target="_blank" rel="noopener noreferrer">OPEN ANILIST ↗</a>`:''}${ownerMode?`<button class="btn primary" data-edit="anime" data-i="${index}" type="button">EDIT ANIME</button>`:''}</div></div>`);
+    }
+    applyOwnerVisibility();
+  }
+
+  function openGlobalSearch() {
+    openModal(`<p class="eyebrow">LUCIAN VEX // GLOBAL SEARCH</p><h2 id="modal-title">Search the archive</h2><p class="muted-note">Search Games, Anime, Skills and Connections from one place.</p><div class="search-row"><input id="global-search-input" placeholder="Search anything..." autocomplete="off"><button class="btn primary" id="global-search-run" type="button">SEARCH</button></div><div id="global-search-results" class="search-results"></div>`);
+    const run=()=>{
+      const q=$('#global-search-input').value.trim().toLowerCase(); const results=[];
+      if(!q) return $('#global-search-results').innerHTML='<div class="empty">Type something to search.</div>';
+      data.games.forEach((x,i)=>{const hay=[x.title,x.status,x.type,x.goal,(x.achievements||[]).join(' '),itemCategories('game',x).join(' ')].join(' ').toLowerCase(); if(hay.includes(q)) results.push({type:'GAME',title:x.title,sub:x.status,index:i,page:'gaming.html'});});
+      data.anime.forEach((x,i)=>{const hay=[x.title,x.status,x.notes,itemCategories('anime',x).join(' ')].join(' ').toLowerCase(); if(hay.includes(q)) results.push({type:'ANIME',title:x.title,sub:x.status,index:i,page:'anime.html'});});
+      data.skills.forEach((x,i)=>{if([x.name,x.desc].join(' ').toLowerCase().includes(q)) results.push({type:'SKILL',title:x.name,sub:x.desc,index:i,page:'skills.html'});});
+      data.links.forEach((x,i)=>{if([x.name,x.role,x.url].join(' ').toLowerCase().includes(q)) results.push({type:'LINK',title:x.name,sub:x.role,index:i,page:'network.html'});});
+      $('#global-search-results').innerHTML=results.length?results.slice(0,50).map(r=>`<button class="search-result search-result-button" data-deeplink="${r.page}#${r.type.toLowerCase()}-${r.index}" type="button"><div><strong>${esc(r.title)}</strong><small>${esc(r.type)} • ${esc(r.sub||'')}</small></div><span>OPEN ↗</span></button>`).join(''):'<div class="empty">No matches found.</div>';
+    };
+    $('#global-search-run')?.addEventListener('click',run); $('#global-search-input')?.addEventListener('input',run); $('#global-search-input')?.addEventListener('keydown',e=>{if(e.key==='Enter')run();});
+  }
+
+  function handleDeepLink() {
+    const hash=location.hash.replace(/^#/,''); const m=hash.match(/^(game|anime|skill|link)-(\d+)$/); if(!m) return;
+    const typeMap={game:'game',anime:'anime'};
+    if(typeMap[m[1]]) openArchiveDetails(typeMap[m[1]],Number(m[2]));
+    else document.getElementById(hash)?.scrollIntoView({behavior:'smooth',block:'center'});
+  }
+
+  function toggleFavorite(type, index) {
+    if (type === 'anime') {
+      const item=data.anime[index]; if(!item) return;
+      item.favorite=!item.favorite;
+      item.categories=itemCategories('anime',item).filter(id=>id!=='favorite');
+      if(item.favorite)item.categories.push('favorite');
+      item.updatedAt=new Date().toISOString();
+      persist(item.favorite?'Added to favorites':'Removed from favorites');
+      return;
+    }
+    if (type === 'game') {
+      const item=data.games[index]; if(!item) return;
+      const hadFavorite=itemCategories('game',item).includes('favorite');
+      const cats=itemCategories('game',item).filter(id=>id!=='favorite');
+      item.categories=hadFavorite ? (cats.length?cats:['rotation']) : ['favorite',...(cats.length?cats:['rotation'])];
+      item.category=item.categories.find(id=>id!=='favorite') || item.categories[0] || 'rotation';
+      item.updatedAt=new Date().toISOString();
+      persist(hadFavorite?'Removed from game favorites':'Added to game favorites');
+    }
   }
 
   let revealObserver = null;
@@ -983,42 +1295,42 @@
     }
   });
 
-  $('#modal-close').addEventListener('click', closeModal);
-  modal.addEventListener('click', event => { if (event.target === modal) closeModal(); });
+  $('#modal-close')?.addEventListener('click', closeModal);
+  modal?.addEventListener('click', event => { if (event.target === modal) closeModal(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeModal(); });
 
   document.addEventListener('click', event => {
-    const add = event.target.closest('[data-open]');
-    if (add) { if (!ownerMode) return showToast('Owner mode is locked'); openManager(add.dataset.open, -1); }
-    const edit = event.target.closest('[data-edit]');
-    if (edit) { if (!ownerMode) return showToast('Owner mode is locked'); openManager(edit.dataset.edit, Number(edit.dataset.i)); }
-    const del = event.target.closest('[data-del]');
-    if (del) {
-      if (!ownerMode) return showToast('Owner mode is locked');
-      const type = del.dataset.del, index = Number(del.dataset.i), arr = getArray(type);
-      if (confirm('Delete this item?')) { arr.splice(index, 1); persist('Deleted'); }
-    }
-    const save = event.target.closest('[data-save-manager]');
-    if (save) { if (!ownerMode) return showToast('Owner mode is locked'); saveManager(save.dataset.saveManager, Number(save.dataset.index)); }
-    const addAni = event.target.closest('[data-add-anilist]');
-    if (addAni) { if (!ownerMode) return showToast('Owner mode is locked'); addFromAniList(addAni.dataset.addAnilist); }
-    const fav = event.target.closest('[data-fav="anime"]');
-    if (fav) { if (!ownerMode) return showToast('Owner mode is locked'); toggleFavorite(Number(fav.dataset.i)); }
+    const card = event.target.closest('.link-card[data-href]');
+    if(card && !event.target.closest('button,a')){const url=card.dataset.href;if(url)window.open(url,'_blank','noopener,noreferrer');return;}
+    const add=event.target.closest('[data-open]'); if(add){if(!ownerMode)return showToast('Owner mode is locked');openManager(add.dataset.open,-1);return;}
+    const edit=event.target.closest('[data-edit]'); if(edit){if(!ownerMode)return showToast('Owner mode is locked');openManager(edit.dataset.edit,Number(edit.dataset.i));return;}
+    const del=event.target.closest('[data-del]'); if(del){if(!ownerMode)return showToast('Owner mode is locked');const type=del.dataset.del,index=Number(del.dataset.i),arr=getArray(type);if(confirm('Delete this item?')){arr.splice(index,1);persist('Deleted');}return;}
+    const save=event.target.closest('[data-save-manager]'); if(save){if(!ownerMode)return showToast('Owner mode is locked');saveManager(save.dataset.saveManager,Number(save.dataset.index));return;}
+    const addAni=event.target.closest('[data-add-anilist]'); if(addAni){if(!ownerMode)return showToast('Owner mode is locked');addFromAniList(addAni.dataset.addAnilist);return;}
+    const addSteam=event.target.closest('[data-add-steam]'); if(addSteam){if(!ownerMode)return showToast('Owner mode is locked');addFromSteam(addSteam.dataset.addSteam);return;}
+    const categoryFilter=event.target.closest('[data-category-filter]'); if(categoryFilter){const isGame=!!categoryFilter.closest('.game-toolbar');const id=categoryFilter.dataset.categoryFilter||'all';if(isGame){gameFilter=id;gameVisibleLimit=GAME_PAGE_SIZE;renderGames();}else{animeFilter=id;animeVisibleLimit=ANIME_PAGE_SIZE;renderAnime();}return;}
+    const favAnime=event.target.closest('[data-fav="anime"]'); if(favAnime){if(!ownerMode)return showToast('Owner mode is locked');toggleFavorite('anime',Number(favAnime.dataset.i));return;}
+    const favGame=event.target.closest('[data-fav="game"]'); if(favGame){if(!ownerMode)return showToast('Owner mode is locked');toggleFavorite('game',Number(favGame.dataset.i));return;}
+    const details=event.target.closest('[data-details]'); if(details){openArchiveDetails(details.dataset.details,Number(details.dataset.i));return;}
+    const more=event.target.closest('[data-load-more]'); if(more){if(more.dataset.loadMore==='game'){gameVisibleLimit+=GAME_PAGE_SIZE;renderGames();}else{animeVisibleLimit+=ANIME_PAGE_SIZE;renderAnime();}return;}
+    const deep=event.target.closest('[data-deeplink]'); if(deep){location.href=deep.dataset.deeplink.includes('.html')?deep.dataset.deeplink:deep.dataset.deeplink;return;}
   });
 
-  $('#anilist-search-open').addEventListener('click', aniSearch);
-  $('#theme-btn').addEventListener('click', openThemeManager);
-  $('#export-btn').addEventListener('click', exportData);
-  $('#discord-setup').addEventListener('click', openDiscordSetup);
+  $('#global-search-btn')?.addEventListener('click',openGlobalSearch);
+  $('#anilist-search-open')?.addEventListener('click', aniSearch);
+  $('#theme-btn')?.addEventListener('click', openThemeManager);
+  $('#export-btn')?.addEventListener('click', exportData);
+  $('#discord-setup')?.addEventListener('click', openDiscordSetup);
 
-  $$('.filter').forEach(button => button.addEventListener('click', () => {
-    $$('.filter').forEach(x => x.classList.remove('active'));
-    button.classList.add('active'); animeFilter = button.dataset.filter; renderAnime();
-  }));
+  $('#steam-search-open')?.addEventListener('click', steamSearch);
+  $('#category-system-open')?.addEventListener('click', openCategoryManager);
 
-  $('#menu-btn').addEventListener('click', () => $('#nav').classList.toggle('open'));
+  $('#menu-btn')?.addEventListener('click', () => $('#nav')?.classList.toggle('open'));
+  $('#game-page-search')?.addEventListener('input', e => { gameSearchQuery=e.target.value.trim().toLowerCase(); gameVisibleLimit=GAME_PAGE_SIZE; renderGames(); });
+  $('#anime-page-search')?.addEventListener('input', e => { animeSearchQuery=e.target.value.trim().toLowerCase(); animeVisibleLimit=ANIME_PAGE_SIZE; renderAnime(); });
+  $('#theme-page-open')?.addEventListener('click', openThemeManager);
   applyLiveWallpaper();
-  $$('#nav a').forEach(link => link.addEventListener('click', () => $('#nav').classList.remove('open')));
+  $$('#nav a').forEach(link => link.addEventListener('click', () => $('#nav')?.classList.remove('open')));
 
   (async () => {
     if (cloudEnabled) {
@@ -1038,6 +1350,7 @@
     loadTheme();
     renderAll();
     renderDiscordProfile();
+    setTimeout(handleDeepLink, 60);
     applyOwnerVisibility();
     setupReveal();
   })();
