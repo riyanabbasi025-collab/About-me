@@ -190,3 +190,7 @@ body{isolation:isolate}
 /* V22 performance: archive cards don't need the page-wide reveal observer. */
 .archive-card{content-visibility:auto;contain-intrinsic-size:360px 520px;}
 .game-grid,.anime-grid{contain:layout style;}
+
+/* V23 archive performance: keep each card's layout/paint work isolated. */
+.archive-card{contain:layout paint;content-visibility:auto;contain-intrinsic-size:360px 520px}
+@media (prefers-reduced-motion:reduce){.live-wallpaper-layer,.wallpaper-stage-glow{animation:none!important}.btn,.filter,.wallpaper-mode{transition:none!important}}

@@ -40,6 +40,7 @@
   let cloudOwner = false;
   let saved = null;
   let cachedPublished = null;
+  let publishedUpdatedAt = '';
   try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) {}
   try { cachedPublished = JSON.parse(localStorage.getItem(PUBLISHED_CACHE_KEY) || 'null'); } catch (_) {}
   let data = clone(cachedPublished || saved || window.LUCIAN_DATA || {});
@@ -50,18 +51,30 @@
   data.links ||= [];
 
   async function loadPublishedData() {
-    await ensureSupabaseClient();
-    if (cloudEnabled && supabaseClient) {
+    if (SUPABASE_URL && SUPABASE_KEY) {
       try {
-        const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data,updated_at').eq('id', 1).single();
-        if (error) throw error;
-        if (row?.data && typeof row.data === 'object') {
-          const normalized = normalizeData(row.data);
-          try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(normalized)); } catch (_) {}
-          return normalized;
+        const endpoint = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/lucian_site_data?id=eq.1&select=data,updated_at`;
+        const response = await fetch(endpoint, {
+          method: 'GET',
+          headers: {
+            apikey: SUPABASE_KEY,
+            Authorization: `Bearer ${SUPABASE_KEY}`,
+            Accept: 'application/json'
+          },
+          cache: 'no-store'
+        });
+        if (response.ok) {
+          const rows = await response.json();
+          const row = Array.isArray(rows) ? rows[0] : null;
+          if (row?.data && typeof row.data === 'object') {
+            publishedUpdatedAt = String(row.updated_at || '');
+            const normalized = normalizeData(row.data);
+            try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(normalized)); } catch (_) {}
+            return normalized;
+          }
         }
       } catch (error) {
-        console.warn('Lucian Vex: cloud data unavailable; using cached/bundled data.', error);
+        console.warn('Lucian Vex: background cloud read failed; using cached/bundled data.', error);
       }
     }
     return normalizeData(cachedPublished || saved || window.LUCIAN_DATA || {});
@@ -251,7 +264,7 @@
       const hay = type === 'game'
         ? [item.title, item.status, item.type, item.goal, achievements.join(' '), ...categoryNames].join(' ').toLowerCase()
         : [item.title, item.status, item.notes, ...categoryNames].join(' ').toLowerCase();
-      return { index, item, categories, categoryNames, hay };
+      return { index, item, categories, catSet: new Set(categories), categoryNames, hay };
     });
 
     archiveIndex.games = build('game', data.games);
@@ -337,26 +350,78 @@
     showToast.timer = setTimeout(() => toast.classList.remove('show'), 1800);
   }
 
-  async function persist(message = 'Saved') {
-    if (!ownerMode) return showToast('Owner mode is locked');
-    data = normalizeData(data);
-    buildArchiveIndex();
-    if (cloudEnabled && cloudSession) {
-      try {
-        const { error } = await supabaseClient.from('lucian_site_data').update({ data, updated_at: new Date().toISOString() }).eq('id', 1);
-        if (error) throw error;
-        try { localStorage.removeItem(KEY); } catch (_) {}
-        renderAll();
-        showToast(message + ' • synced');
-        return;
-      } catch (error) {
-        console.error(error);
-        showToast('Cloud save failed — nothing was published');
-        return;
-      }
+  let cloudWriteRunning = false;
+  let cloudSaveRevision = 0;
+  let cloudSyncedRevision = 0;
+  let cloudRetryTimer = 0;
+  let lastCloudErrorToast = 0;
+
+  function persistLocalDraft() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(data));
+      window.LUCIAN_DATA = data;
+    } catch (error) {
+      showToast('Local storage is full — use smaller posters');
+      console.error(error);
     }
-    try { localStorage.setItem(KEY, JSON.stringify(data)); renderAll(); showToast(message); }
-    catch (error) { showToast('Storage is full — use smaller posters'); console.error(error); }
+  }
+
+  async function flushCloudSync() {
+    if (cloudWriteRunning || !cloudEnabled || !supabaseClient || !cloudSession) return;
+    cloudWriteRunning = true;
+    try {
+      while (cloudSyncedRevision < cloudSaveRevision && cloudEnabled && supabaseClient && cloudSession) {
+        const targetRevision = cloudSaveRevision;
+        const snapshot = data;
+        try {
+          const { error } = await supabaseClient.from('lucian_site_data').update({ data: snapshot, updated_at: new Date().toISOString() }).eq('id', 1);
+          if (error) throw error;
+          cloudSyncedRevision = targetRevision;
+          try { localStorage.removeItem(KEY); } catch (_) {}
+          setTimeout(() => {
+            try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(snapshot)); } catch (_) {}
+          }, 0);
+          if (cloudSyncedRevision === cloudSaveRevision) showToast('Saved • synced');
+        } catch (error) {
+          console.error(error);
+          const now = Date.now();
+          if (now - lastCloudErrorToast > 2500) {
+            showToast('Saved locally • cloud retrying');
+            lastCloudErrorToast = now;
+          }
+          cloudWriteRunning = false;
+          clearTimeout(cloudRetryTimer);
+          cloudRetryTimer = setTimeout(() => flushCloudSync(), 2500);
+          return;
+        }
+      }
+    } finally {
+      cloudWriteRunning = false;
+    }
+  }
+
+  function requestCloudSync() {
+    if (!cloudEnabled || !cloudSession || !supabaseClient) return;
+    cloudSaveRevision += 1;
+    flushCloudSync();
+  }
+
+  function persist(message = 'Saved') {
+    if (!ownerMode) return showToast('Owner mode is locked');
+    // data is already normalized on load/import/edit. Avoid cloning the entire
+    // archive here: that can be extremely expensive once many posters exist.
+    buildArchiveIndex();
+    // Paint first. The large local draft serialization happens after the current interaction.
+    setTimeout(persistLocalDraft, 0);
+    // The local state is the source of truth for the current interaction.
+    // Rendering never waits for a network round-trip.
+    renderCurrentPage();
+    if (cloudEnabled && cloudSession && supabaseClient) {
+      requestCloudSync();
+      showToast(message + ' • syncing');
+    } else {
+      showToast(message + ' • local');
+    }
   }
 
   function openModal(html) {
@@ -436,48 +501,157 @@
   let gameVisibleLimit = GAME_PAGE_SIZE;
   let animeVisibleLimit = ANIME_PAGE_SIZE;
 
+  const archivePools = {
+    game: { cards: [], empty: null, grid: null },
+    anime: { cards: [], empty: null, grid: null }
+  };
+
+  function makeGamePoolCard() {
+    const card = document.createElement('article');
+    card.className = 'card archive-card';
+    card.innerHTML = `<div class="poster-frame"><img class="poster" alt="" loading="lazy"><span class="source-badge"></span></div>
+      <div class="card-body"><div class="category-tags"></div><h3></h3><div class="game-meta"><span></span><span></span></div>
+      <div class="progress-line"><span></span></div><div class="rating-line"><span>LUCIAN RATING</span><strong></strong></div>
+      <p class="card-desc game-achievements" hidden></p><p class="card-desc game-goal" hidden></p>
+      <button class="details-btn" data-details="game" type="button">VIEW DETAILS ↗</button></div>
+      <div class="card-actions"><span></span><span><button class="icon-btn owner-only game-fav" data-fav="game" type="button">♡</button>
+      <button class="icon-btn owner-only game-edit" data-edit="game" type="button">EDIT</button><button class="icon-btn owner-only game-delete" data-del="game" type="button">DELETE</button></span></div>`;
+    const img = card.querySelector('img');
+    img.onerror = () => { card.querySelector('.poster-frame')?.classList.add('broken'); img.removeAttribute('src'); };
+    return card;
+  }
+
+  function makeAnimePoolCard() {
+    const card = document.createElement('article');
+    card.className = 'card anime-card archive-card';
+    card.innerHTML = `<div class="poster-frame anime"><img class="poster" alt="" loading="lazy"><span class="source-badge"></span></div>
+      <div class="card-body"><div class="category-tags"></div><h3></h3><div class="anime-meta"><span></span><span></span></div>
+      <div class="progress-line"><span></span></div><p class="card-desc anime-notes"></p>
+      <button class="details-btn" data-details="anime" type="button">VIEW DETAILS ↗</button></div>
+      <div class="card-actions"><span></span><span><button class="favorite owner-only anime-fav" data-fav="anime" type="button">♡</button>
+      <button class="icon-btn owner-only anime-edit" data-edit="anime" type="button">EDIT</button><button class="icon-btn owner-only anime-delete" data-del="anime" type="button">DELETE</button></span></div>`;
+    const img = card.querySelector('img');
+    img.onerror = () => { card.querySelector('.poster-frame')?.classList.add('broken'); img.removeAttribute('src'); };
+    return card;
+  }
+
+  function ensureArchivePool(type, grid, size) {
+    const pool = archivePools[type];
+    if (pool.grid !== grid) { pool.grid = grid; pool.cards = []; pool.empty = null; grid.replaceChildren(); }
+    if (!pool.empty) {
+      pool.empty = document.createElement('div');
+      pool.empty.className = 'empty';
+      pool.empty.hidden = true;
+      grid.appendChild(pool.empty);
+    }
+    while (pool.cards.length < size) {
+      const card = type === 'game' ? makeGamePoolCard() : makeAnimePoolCard();
+      card.hidden = true;
+      pool.cards.push(card);
+      grid.appendChild(card);
+    }
+    return pool;
+  }
+
+  function paintPool(pool, entries, type) {
+    entries.forEach((entry, slot) => {
+      const item = entry.item;
+      const card = pool.cards[slot];
+      card.hidden = false;
+      card.id = `${type}-${entry.index}`;
+      card.dataset.index = String(entry.index);
+      const img = card.querySelector('img');
+      const poster = String(item.poster || '');
+      if (img.getAttribute('src') !== poster) {
+        card.querySelector('.poster-frame')?.classList.remove('broken');
+        if (poster) img.src = poster; else img.removeAttribute('src');
+      }
+      img.alt = `${item.title || 'Untitled'} poster`;
+
+      const tags = card.querySelector('.category-tags');
+      tags.innerHTML = entry.categories.length
+        ? entry.categories.map(id => `<span class="tag">${esc(categoryLabel(id))}</span>`).join('')
+        : `<span class="tag">${type === 'game' ? 'IN ROTATION' : 'PLANNING'}</span>`;
+      card.querySelector('h3').textContent = item.title || 'Untitled';
+      card.querySelector('.source-badge').textContent = type === 'game' ? (item.source === 'steam' ? 'STEAM' : 'MANUAL') : (item.anilistId ? 'ANILIST' : 'MANUAL');
+
+      if (type === 'game') {
+        const progress = clamp(item.progress, 0, 100);
+        const rating = item.rating === '' || item.rating == null ? '' : Number(item.rating).toFixed(1);
+        const achievements = Array.isArray(item.achievements) ? item.achievements : [];
+        card.querySelector('.game-meta').children[0].textContent = item.rank || 'No rank';
+        card.querySelector('.game-meta').children[1].textContent = `${progress}%`;
+        card.querySelector('.progress-line span').style.width = `${progress}%`;
+        card.querySelector('.rating-line strong').textContent = rating ? `${rating}/10` : 'NOT RATED';
+        const achievementEl = card.querySelector('.game-achievements');
+        achievementEl.hidden = !achievements.length;
+        achievementEl.innerHTML = achievements.length ? `<strong>${achievements.length}</strong> achievement${achievements.length === 1 ? '' : 's'} logged` : '';
+        const goalEl = card.querySelector('.game-goal');
+        goalEl.hidden = !item.goal;
+        goalEl.textContent = item.goal || '';
+        const favorite = entry.catSet.has('favorite');
+        const fav = card.querySelector('.game-fav');
+        fav.textContent = favorite ? '♥' : '♡';
+        fav.classList.toggle('active', favorite);
+        card.querySelector('[data-details]').dataset.i = String(entry.index);
+        card.querySelector('.game-edit').dataset.i = String(entry.index);
+        card.querySelector('.game-delete').dataset.i = String(entry.index);
+        fav.dataset.i = String(entry.index);
+      } else {
+        const pct = item.totalEpisodes ? clamp(Math.round((Number(item.episode || 0) / Number(item.totalEpisodes)) * 100), 0, 100) : 0;
+        card.querySelector('.anime-meta').children[0].textContent = `EP ${item.episode || 0}/${item.totalEpisodes || '?'}`;
+        card.querySelector('.anime-meta').children[1].textContent = item.score !== '' && item.score != null ? `${item.score}/10` : 'NO SCORE';
+        card.querySelector('.progress-line span').style.width = `${pct}%`;
+        card.querySelector('.anime-notes').textContent = item.notes || '';
+        const favorite = Boolean(item.favorite) || entry.catSet.has('favorite');
+        const fav = card.querySelector('.anime-fav');
+        fav.textContent = favorite ? '♥' : '♡';
+        fav.classList.toggle('active', favorite);
+        card.querySelector('[data-details]').dataset.i = String(entry.index);
+        card.querySelector('.anime-edit').dataset.i = String(entry.index);
+        card.querySelector('.anime-delete').dataset.i = String(entry.index);
+        fav.dataset.i = String(entry.index);
+      }
+    });
+    for (let i = entries.length; i < pool.cards.length; i++) pool.cards[i].hidden = true;
+    pool.empty.hidden = entries.length !== 0;
+  }
+
+  function filterArchiveEntries(type) {
+    const source = type === 'game' ? archiveIndex.games : archiveIndex.anime;
+    const filter = type === 'game' ? gameFilter : animeFilter;
+    const q = type === 'game' ? gameSearchQuery : animeSearchQuery;
+    const out = [];
+    for (const entry of source) {
+      if (filter !== 'all' && !entry.catSet.has(filter)) continue;
+      if (q && !entry.hay.includes(q)) continue;
+      out.push(entry);
+    }
+    return out;
+  }
+
   function renderGames(refreshToolbar = false) {
     const el = $('#game-grid');
     if (!el) return;
     if (refreshToolbar) renderCategoryFilters('game');
-    if (!data.games.length) { el.innerHTML = '<div class=\"empty\">No games yet. Use ADD GAME or STEAM SEARCH to create one.</div>'; updateLoadMore('game', false); return; }
-
-    const q = gameSearchQuery;
-    const filtered = archiveIndex.games.filter(entry => {
-      const categoryMatch = gameFilter === 'all' || entry.categories.includes(gameFilter);
-      return categoryMatch && (!q || entry.hay.includes(q));
-    });
-    const gameCountLabel=$('#game-count-label'); if(gameCountLabel) gameCountLabel.textContent=`${filtered.length} / ${data.games.length} GAMES`;
-    if (!filtered.length) { el.innerHTML = '<div class=\"empty\">Nothing matches this game view.</div>'; updateLoadMore('game', false); return; }
+    const pool = ensureArchivePool('game', el, GAME_PAGE_SIZE);
+    if (!data.games.length) {
+      pool.empty.textContent = 'No games yet. Use ADD GAME or STEAM SEARCH to create one.';
+      paintPool(pool, [], 'game');
+      updateLoadMore('game', false);
+      return;
+    }
+    const filtered = filterArchiveEntries('game');
+    const count = $('#game-count-label');
+    if (count) count.textContent = `${filtered.length} / ${data.games.length} GAMES`;
+    if (!filtered.length) {
+      pool.empty.textContent = 'Nothing matches this game view.';
+      paintPool(pool, [], 'game');
+      updateLoadMore('game', false);
+      return;
+    }
     const visible = filtered.slice(0, gameVisibleLimit);
-    el.innerHTML = visible.map(entry => {
-      const item = entry.item;
-      const i = entry.index;
-      const categories = entry.categories;
-      const achievements = Array.isArray(item.achievements) ? item.achievements : [];
-      const categoryTags = categories.length ? categories.map(id => `<span class=\"tag\">${esc(gameCategoryLabel(id))}</span>`).join('') : '<span class=\"tag\">IN ROTATION</span>';
-      const rating = item.rating === '' || item.rating == null ? '—' : Number(item.rating).toFixed(1);
-      const favorite = categories.includes('favorite');
-      return `
-      <article class=\"card archive-card\" id=\"game-${i}\">
-        <div class=\"poster-frame\"><img class=\"poster\" src=\"${esc(item.poster || '')}\" alt=\"${esc(item.title || '')}\" loading=\"lazy\" onerror=\"this.closest('.poster-frame').classList.add('broken');this.remove()\"><span class=\"source-badge\">${item.source==='steam'?'STEAM':'MANUAL'}</span></div>
-        <div class=\"card-body\">
-          <div class=\"category-tags\">${categoryTags}</div>
-          <h3>${esc(item.title || 'Untitled')}</h3>
-          <div class=\"game-meta\"><span>${esc(item.rank || 'No rank')}</span><span>${clamp(item.progress,0,100)}%</span></div>
-          <div class=\"progress-line\"><span style=\"width:${clamp(item.progress,0,100)}%\"></span></div>
-          <div class=\"rating-line\"><span>LUCIAN RATING</span><strong>${rating === '—' ? 'NOT RATED' : `${rating}/10`}</strong></div>
-          ${achievements.length ? `<p class=\"card-desc game-achievements\"><strong>${achievements.length}</strong> achievement${achievements.length===1?'':'s'} logged</p>` : ''}
-          ${item.goal ? `<p class=\"card-desc\" style=\"margin-top:9px\">${esc(item.goal)}</p>` : ''}
-          <button class=\"details-btn\" data-details=\"game\" data-i=\"${i}\" type=\"button\">VIEW DETAILS ↗</button>
-        </div>
-        <div class=\"card-actions\"><span></span><span>
-          <button class=\"icon-btn owner-only ${favorite?'active':''}\" data-fav=\"game\" data-i=\"${i}\" type=\"button\">${favorite?'♥':'♡'}</button>
-          <button class=\"icon-btn owner-only\" data-edit=\"game\" data-i=\"${i}\" type=\"button\">EDIT</button>
-          <button class=\"icon-btn owner-only\" data-del=\"game\" data-i=\"${i}\" type=\"button\">DELETE</button>
-        </span></div>
-      </article>`;
-    }).join('');
+    paintPool(pool, visible, 'game');
     updateLoadMore('game', filtered.length > visible.length);
   }
 
@@ -491,40 +665,24 @@
     const el = $('#anime-grid');
     if (!el) return;
     if (refreshToolbar) renderCategoryFilters('anime');
-    if (!data.anime.length) { el.innerHTML = '<div class=\"empty\">No anime yet. Use ANILIST SEARCH or ADD MANUALLY to create one.</div>'; updateLoadMore('anime', false); return; }
-
-    const q = animeSearchQuery;
-    const filtered = archiveIndex.anime.filter(entry => {
-      const categoryMatch = animeFilter === 'all' || entry.categories.includes(animeFilter);
-      return categoryMatch && (!q || entry.hay.includes(q));
-    });
-    const animeCountLabel=$('#anime-count-label'); if(animeCountLabel) animeCountLabel.textContent=`${filtered.length} / ${data.anime.length} ANIME`;
-    if (!filtered.length) { el.innerHTML = '<div class=\"empty\">Nothing matches this anime view.</div>'; updateLoadMore('anime', false); return; }
+    const pool = ensureArchivePool('anime', el, ANIME_PAGE_SIZE);
+    if (!data.anime.length) {
+      pool.empty.textContent = 'No anime yet. Use ANILIST SEARCH or ADD MANUALLY to create one.';
+      paintPool(pool, [], 'anime');
+      updateLoadMore('anime', false);
+      return;
+    }
+    const filtered = filterArchiveEntries('anime');
+    const count = $('#anime-count-label');
+    if (count) count.textContent = `${filtered.length} / ${data.anime.length} ANIME`;
+    if (!filtered.length) {
+      pool.empty.textContent = 'Nothing matches this anime view.';
+      paintPool(pool, [], 'anime');
+      updateLoadMore('anime', false);
+      return;
+    }
     const visible = filtered.slice(0, animeVisibleLimit);
-    el.innerHTML = visible.map(entry => {
-      const item = entry.item;
-      const i = entry.index;
-      const pct = item.totalEpisodes ? clamp(Math.round((item.episode || 0) / item.totalEpisodes * 100), 0, 100) : 0;
-      const categories = entry.categories;
-      const categoryTags = categories.length ? categories.map(id => `<span class=\"tag\">${esc(categoryLabel(id))}</span>`).join('') : '<span class=\"tag\">PLANNING</span>';
-      return `
-      <article class=\"card anime-card archive-card\" id=\"anime-${i}\">
-        <div class=\"poster-frame anime\"><img class=\"poster\" src=\"${esc(item.poster || '')}\" alt=\"${esc(item.title || '')}\" loading=\"lazy\" onerror=\"this.closest('.poster-frame').classList.add('broken');this.remove()\"><span class=\"source-badge\">${item.anilistId?'ANILIST':'MANUAL'}</span></div>
-        <div class=\"card-body\">
-          <div class=\"category-tags\">${categoryTags}</div>
-          <h3>${esc(item.title || 'Untitled')}</h3>
-          <div class=\"anime-meta\"><span>EP ${item.episode || 0}/${item.totalEpisodes || '?'}</span><span>${item.score !== '' && item.score != null ? esc(item.score) + '/10' : 'NO SCORE'}</span></div>
-          <div class=\"progress-line\"><span style=\"width:${pct}%\"></span></div>
-          <p class=\"card-desc\" style=\"margin-top:10px\">${esc(item.notes || '')}</p>
-          <button class=\"details-btn\" data-details=\"anime\" data-i=\"${i}\" type=\"button\">VIEW DETAILS ↗</button>
-        </div>
-        <div class=\"card-actions\"><span></span><span>
-          <button class=\"favorite owner-only ${item.favorite ? 'active' : ''}\" data-fav=\"anime\" data-i=\"${i}\" type=\"button\">${item.favorite?'♥':'♡'}</button>
-          <button class=\"icon-btn owner-only\" data-edit=\"anime\" data-i=\"${i}\" type=\"button\">EDIT</button>
-          <button class=\"icon-btn owner-only\" data-del=\"anime\" data-i=\"${i}\" type=\"button\">DELETE</button>
-        </span></div>
-      </article>`;
-    }).join('');
+    paintPool(pool, visible, 'anime');
     updateLoadMore('anime', filtered.length > visible.length);
   }
 
@@ -601,6 +759,19 @@
 
   function formatRelative(value) {
     const diff=Math.max(0,Date.now()-new Date(value).getTime()); const mins=Math.floor(diff/60000); if(mins<1) return 'JUST NOW'; if(mins<60) return `${mins}M AGO`; const hrs=Math.floor(mins/60); if(hrs<24) return `${hrs}H AGO`; const days=Math.floor(hrs/24); return `${days}D AGO`;
+  }
+
+  function renderCurrentPage() {
+    buildArchiveIndex();
+    if (PAGE === 'home') { renderProfile(); renderHomeDashboard(); }
+    else if (PAGE === 'about') renderProfile();
+    else if (PAGE === 'skills') renderSkills();
+    else if (PAGE === 'gaming') renderGames(true);
+    else if (PAGE === 'anime') renderAnime(true);
+    else if (PAGE === 'network') renderLinks();
+    if ($('#discord-card')) renderDiscordProfile();
+    applyLiveWallpaper();
+    applyOwnerVisibility();
   }
 
   function renderAll() { buildArchiveIndex(); renderProfile(); renderDiscordProfile(); renderSkills(); renderGames(true); renderAnime(true); renderLinks(); if(PAGE==='home') renderHomeDashboard(); setupReveal(); applyLiveWallpaper(); applyOwnerVisibility(); }
@@ -1401,14 +1572,28 @@
     if (!window.matchMedia('(pointer: fine)').matches) return;
     const core = $('#cursor-core'), ring = $('#cursor-ring'), trail = $('#cursor-trail');
     if (!core || !ring || !trail) return;
-    let x = innerWidth / 2, y = innerHeight / 2, rx = x, ry = y;
-    const move = e => { x = e.clientX; y = e.clientY; core.style.transform = `translate3d(${x}px,${y}px,0)`; trail.style.transform = `translate3d(${x}px,${y}px,0)`; document.body.classList.add('cursor-active'); };
-    const tick = () => { rx += (x - rx) * .18; ry += (y - ry) * .18; ring.style.transform = `translate3d(${rx}px,${ry}px,0)`; requestAnimationFrame(tick); };
+    let x = innerWidth / 2, y = innerHeight / 2, rx = x, ry = y, raf = 0, lastMove = 0;
+    const tick = now => {
+      rx += (x - rx) * .24;
+      ry += (y - ry) * .24;
+      ring.style.transform = `translate3d(${rx}px,${ry}px,0)`;
+      if (now - lastMove < 650 || Math.abs(x-rx) > .5 || Math.abs(y-ry) > .5) raf = requestAnimationFrame(tick);
+      else raf = 0;
+    };
+    const wake = () => {
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    const move = e => {
+      x = e.clientX; y = e.clientY; lastMove = performance.now();
+      core.style.transform = `translate3d(${x}px,${y}px,0)`;
+      trail.style.transform = `translate3d(${x}px,${y}px,0)`;
+      document.body.classList.add('cursor-active');
+      wake();
+    };
     addEventListener('mousemove', move, { passive:true });
     addEventListener('mouseleave', () => document.body.classList.remove('cursor-active'));
     document.addEventListener('mouseover', e => { if (e.target.closest('a,button,.card,.panel,.discord-card,.filter')) document.body.classList.add('cursor-hover'); });
     document.addEventListener('mouseout', e => { if (e.target.closest('a,button,.card,.panel,.discord-card,.filter')) document.body.classList.remove('cursor-hover'); });
-    tick();
   }
 
   function exportData() {
@@ -1474,32 +1659,40 @@
   applyOwnerVisibility();
   setupReveal();
 
-  (async () => {
-    if (SUPABASE_URL && SUPABASE_KEY) {
-      const publishedPromise = loadPublishedData();
-      const sessionPromise = loadOwnerSession();
-      const [published] = await Promise.all([publishedPromise, sessionPromise]);
-      data = published;
-      window.LUCIAN_DATA = clone(published);
-      if (cloudSession && !cloudOwner) { await supabaseClient.auth.signOut(); cloudSession = null; }
-      loadTheme();
-      renderAll();
-      supabaseClient.channel('lucian-vex-site-data').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'lucian_site_data', filter: 'id=eq.1' }, payload => {
-        if (!ownerMode) {
-          data = normalizeData(payload.new?.data || data);
-          window.LUCIAN_DATA = clone(data);
-          try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
-          loadTheme();
-          renderAll();
-          showToast('Site updated');
-        }
-      }).subscribe();
-    } else {
-      data = normalizeData(saved || cachedPublished || window.LUCIAN_DATA || {});
-      window.LUCIAN_DATA = clone(data);
-      loadTheme();
-      renderAll();
-    }
-  })();
+  // Cloud reads use Supabase REST directly. The heavier Supabase JS client is loaded
+  // only when Owner Mode is actually requested, keeping public navigation responsive.
+  const refreshPublicData = async () => {
+    if (!SUPABASE_URL || !SUPABASE_KEY || ownerMode) return;
+    try {
+      const endpoint = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/lucian_site_data?id=eq.1&select=updated_at`;
+      const response = await fetch(endpoint, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Accept: 'application/json' }, cache: 'no-store' });
+      if (!response.ok) return;
+      const rows = await response.json();
+      const remoteUpdatedAt = String(rows?.[0]?.updated_at || '');
+      if (!remoteUpdatedAt || remoteUpdatedAt === publishedUpdatedAt) return;
+      const published = await loadPublishedData();
+      const incomingUpdatedAt = publishedUpdatedAt;
+      if (!published || incomingUpdatedAt === remoteUpdatedAt || JSON.stringify(published) !== JSON.stringify(data)) {
+        data = published;
+        window.LUCIAN_DATA = data;
+        loadTheme();
+        renderAll();
+      }
+    } catch (_) {}
+  };
+
+  // Let the browser paint and become interactive first. Reconcile cloud data in idle time.
+  const idleRefresh = () => refreshPublicData();
+  if ('requestIdleCallback' in window) {
+    requestIdleCallback(idleRefresh, { timeout: 3500 });
+  } else {
+    setTimeout(idleRefresh, 2500);
+  }
+
+  // Keep other devices in sync without loading the full realtime client for every visitor.
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && !ownerMode) refreshPublicData();
+  }, 60000);
+
   setupCursor();
 })();
