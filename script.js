@@ -2,6 +2,7 @@
   'use strict';
 
   const KEY = 'lucian-vex-site-v5';
+  const PUBLISHED_CACHE_KEY = 'lucian-vex-published-cache-v1';
   const clone = value => JSON.parse(JSON.stringify(value));
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
@@ -16,8 +17,10 @@
   let cloudSession = null;
   let cloudOwner = false;
   let saved = null;
+  let cachedPublished = null;
   try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) {}
-  let data = clone(window.LUCIAN_DATA || {});
+  try { cachedPublished = JSON.parse(localStorage.getItem(PUBLISHED_CACHE_KEY) || 'null'); } catch (_) {}
+  let data = clone(cachedPublished || saved || window.LUCIAN_DATA || {});
   data.profile ||= {};
   data.skills ||= [];
   data.games ||= [];
@@ -29,12 +32,16 @@
       try {
         const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data,updated_at').eq('id', 1).single();
         if (error) throw error;
-        if (row?.data && typeof row.data === 'object') return normalizeData(row.data);
+        if (row?.data && typeof row.data === 'object') {
+          const normalized = normalizeData(row.data);
+          try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(normalized)); } catch (_) {}
+          return normalized;
+        }
       } catch (error) {
-        console.warn('Lucian Vex: cloud data unavailable; using bundled data.', error);
+        console.warn('Lucian Vex: cloud data unavailable; using cached/bundled data.', error);
       }
     }
-    return normalizeData(window.LUCIAN_DATA || {});
+    return normalizeData(cachedPublished || saved || window.LUCIAN_DATA || {});
   }
 
   async function loadOwnerSession() {
@@ -77,13 +84,41 @@
     return String(value || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 42);
   }
 
+  function normalizeCategoryToken(value) {
+    if (value == null) return '';
+    if (typeof value === 'object') return String(value.id || value.slug || value.name || value.label || '').trim();
+    return String(value).trim();
+  }
+
+  function categoryIdFromToken(token, categorySource = data?.categories || []) {
+    const raw = normalizeCategoryToken(token);
+    if (!raw) return '';
+    const slug = slugCategory(raw);
+    const lower = raw.toLowerCase();
+    const aliases = {
+      favorite:'favorite', favourites:'favorite', favorites:'favorite', 'my favorites':'favorite', 'my favourite games':'favorite', favourite:'favorite',
+      rotation:'rotation', 'in rotation':'rotation', 'games in rotation':'rotation',
+      want:'want', 'want to play':'want', wishlist:'want', backlog:'want', planned:'want', 'games i want to play':'want',
+      completed:'completed', complete:'completed', finished:'completed', done:'completed',
+      watching:'watching', 'currently watching':'watching',
+      planning:'planning', plannedanime:'planning', plan:'planning',
+      paused:'paused', pause:'paused',
+      dropped:'dropped', drop:'dropped'
+    };
+    if (aliases[lower]) return aliases[lower];
+    const byId = (categorySource || []).find(x => String(x?.id || '').trim().toLowerCase() === lower || slugCategory(x?.id) === slug);
+    if (byId) return String(byId.id);
+    const byLabel = (categorySource || []).find(x => String(x?.label || '').trim().toLowerCase() === lower || slugCategory(x?.label) === slug);
+    return byLabel ? String(byLabel.id) : (slug || raw.toLowerCase());
+  }
+
   function normalizeCategoryLibrary(value) {
     const source = Array.isArray(value) ? value : [];
     const seen = new Set();
     const result = [];
     [...BUILTIN_CATEGORIES, ...source].forEach(item => {
-      const id = String(item?.id || slugCategory(item?.label)).trim();
-      const label = String(item?.label || '').trim();
+      const label = String(item?.label || item?.name || item?.id || '').trim();
+      const id = slugCategory(item?.id || item?.slug || label);
       if (!id || !label || seen.has(id)) return;
       seen.add(id);
       result.push({ id, label, builtin: Boolean(item?.builtin || BUILTIN_CATEGORIES.some(x => x.id === id)) });
@@ -93,10 +128,17 @@
 
   function legacyCategoryId(type, item) {
     if (type === 'game') {
-      const raw = String(item?.category || '').trim().toLowerCase();
-      if (['favorite','favourite','favorites','favourites'].includes(raw)) return 'favorite';
-      if (['want','want to play','wishlist','backlog','planned'].includes(raw)) return 'want';
-      if (['completed','complete','finished','done'].includes(raw)) return 'completed';
+      const tokens = [];
+      if (item?.category != null) tokens.push(item.category);
+      if (item?.status != null) tokens.push(item.status);
+      if (item?.favorite === true) tokens.push('favorite');
+      for (const token of tokens) {
+        const raw = normalizeCategoryToken(token).toLowerCase();
+        if (['favorite','favourite','favorites','favourites','my favorites','my favourite games'].includes(raw)) return 'favorite';
+        if (['want','want to play','wishlist','backlog','planned'].includes(raw)) return 'want';
+        if (['completed','complete','finished','done'].includes(raw)) return 'completed';
+        if (['rotation','in rotation','games in rotation'].includes(raw)) return 'rotation';
+      }
       return 'rotation';
     }
     if (type === 'anime') {
@@ -107,14 +149,22 @@
   }
 
   function itemCategories(type, item, categorySource = data?.categories || []) {
-    const libraryIds = new Set((categorySource || []).map(x => x.id));
-    let cats = Array.isArray(item?.categories) ? item.categories.map(x => String(x).trim()).filter(Boolean) : [];
+    const categories = Array.isArray(categorySource) ? categorySource : [];
+    const libraryIds = new Set(categories.map(x => String(x?.id || '')));
+    const rawCats = [];
+    if (Array.isArray(item?.categories)) rawCats.push(...item.categories);
+    if (item?.category != null) rawCats.push(item.category);
+    if (type === 'anime' && item?.status != null) rawCats.push(item.status);
+    if (item?.favorite === true) rawCats.push('favorite');
+
+    let cats = rawCats.map(token => categoryIdFromToken(token, categories))
+      .filter(Boolean)
+      .filter(id => libraryIds.has(id));
     if (!cats.length) {
       const legacy = legacyCategoryId(type, item);
-      if (legacy) cats.push(legacy);
+      if (legacy && libraryIds.has(legacy)) cats.push(legacy);
     }
-    if (type === 'anime' && item?.favorite && !cats.includes('favorite')) cats.push('favorite');
-    return [...new Set(cats.filter(id => libraryIds.has(id)))];
+    return [...new Set(cats)];
   }
 
   function categoryLabel(id) {
@@ -324,7 +374,13 @@
     if (!el) return;
     renderCategoryFilters('game');
     if (!data.games.length) { el.innerHTML = '<div class="empty">No games yet. Use ADD GAME or STEAM SEARCH to create one.</div>'; updateLoadMore('game', false); return; }
-    const filtered = data.games.filter(item => { const q=gameSearchQuery; const hay=[item.title,item.status,item.type,item.goal,(item.achievements||[]).join(' '),itemCategories('game',item).map(categoryLabel).join(' ')].join(' ').toLowerCase(); return (gameFilter === 'all' || itemCategories('game', item).includes(gameFilter)) && (!q || hay.includes(q)); });
+    const filtered = data.games.filter(item => {
+      const q = gameSearchQuery;
+      const cats = itemCategories('game', item);
+      const hay = [item.title,item.status,item.type,item.goal,(item.achievements||[]).join(' '),cats.map(categoryLabel).join(' ')].join(' ').toLowerCase();
+      const categoryMatch = gameFilter === 'all' || cats.includes(gameFilter) || String(item.category || '').toLowerCase() === String(gameFilter).toLowerCase();
+      return categoryMatch && (!q || hay.includes(q));
+    });
     const gameCountLabel=$('#game-count-label'); if(gameCountLabel) gameCountLabel.textContent=`${filtered.length} / ${data.games.length} GAMES`;
     if (!filtered.length) { el.innerHTML = '<div class="empty">Nothing matches this game view.</div>'; updateLoadMore('game', false); return; }
     const visible = filtered.slice(0, gameVisibleLimit);
@@ -368,7 +424,13 @@
     if (!el) return;
     renderCategoryFilters('anime');
     if (!data.anime.length) { el.innerHTML = '<div class="empty">No anime yet. Use ANILIST SEARCH or ADD MANUALLY to create one.</div>'; updateLoadMore('anime', false); return; }
-    const filtered = data.anime.filter(item => { const q=animeSearchQuery; const hay=[item.title,item.status,item.notes,itemCategories('anime',item).map(categoryLabel).join(' ')].join(' ').toLowerCase(); return (animeFilter === 'all' || itemCategories('anime', item).includes(animeFilter)) && (!q || hay.includes(q)); });
+    const filtered = data.anime.filter(item => {
+      const q = animeSearchQuery;
+      const cats = itemCategories('anime', item);
+      const hay = [item.title,item.status,item.notes,cats.map(categoryLabel).join(' ')].join(' ').toLowerCase();
+      const categoryMatch = animeFilter === 'all' || cats.includes(animeFilter) || String(item.status || '').toLowerCase() === String(animeFilter).toLowerCase();
+      return categoryMatch && (!q || hay.includes(q));
+    });
     const animeCountLabel=$('#anime-count-label'); if(animeCountLabel) animeCountLabel.textContent=`${filtered.length} / ${data.anime.length} ANIME`;
     if (!filtered.length) { el.innerHTML = '<div class="empty">Nothing matches this anime view.</div>'; updateLoadMore('anime', false); return; }
     const visible = filtered.slice(0, animeVisibleLimit);
@@ -548,22 +610,24 @@
 
   async function steamSearch() {
     if (!ownerMode) return showToast('Owner mode is locked');
-    openModal(`<p class="eyebrow">STEAM // GAME IMPORT</p><h2 id="modal-title">Search Steam</h2><p class="muted-note">Search the Steam catalog, preview the game and import it. Games outside Steam can still be added manually.</p><div class="search-row"><input id="steam-q" placeholder="Search game..." autocomplete="off"><button class="btn primary" id="steam-go" type="button">SEARCH</button></div><div id="steam-results" class="search-results"></div>`);
+    openModal(`<p class="eyebrow">STEAM // GAME IMPORT</p><h2 id="modal-title">Search Steam</h2><p class="muted-note">Search the Steam catalog, preview the game and import it. Games outside Steam can still be added manually.</p><div class="search-row"><input id="steam-q" placeholder="Search game..." autocomplete="off"><button class="btn primary" id="steam-go" type="button">SEARCH</button></div><div id="steam-results" class="search-results"></div><p class="muted-note">Primary: Steam Store JSON • Fallback: Steam web search + SteamDB</p>`);
     const run = async () => {
       const queryText = $('#steam-q').value.trim(); if (!queryText) return showToast('Type a game name');
       $('#steam-results').innerHTML = '<div class="empty">Searching Steam...</div>';
       try {
-        let json=null, response=await fetch(`/.netlify/functions/steam-search?term=${encodeURIComponent(queryText)}`, {headers:{'Accept':'application/json'}});
+        let json=null;
+        const response=await fetch(`/.netlify/functions/steam-search?term=${encodeURIComponent(queryText)}`, {headers:{'Accept':'application/json'}});
         if (response.ok) json=await response.json();
-        if (!json) {
-          response=await fetch(`https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(queryText)}&cc=us&l=english`);
-          if (!response.ok) throw new Error(`Steam search HTTP ${response.status}`); json=await response.json();
-        }
-        const results=Array.isArray(json.items) ? json.items.slice(0,10) : [];
+        const results=(Array.isArray(json?.items)?json.items:[]).filter(item=>item?.name && item?.id).slice(0,20);
         steamSearchCache.clear(); results.forEach(item=>steamSearchCache.set(String(item.id),item));
-        if(!results.length){$('#steam-results').innerHTML='<div class="empty">No Steam results found.</div>';return;}
-        $('#steam-results').innerHTML=results.map(item=>`<div class="search-result"><img src="${esc(item.tiny_image||item.large_capsule_image||item.header_image||'')}" alt=""><div><strong>${esc(item.name)}</strong><small>App ID ${esc(item.id)}${item.price?.final_formatted?` • ${esc(item.price.final_formatted)}`:''}</small></div><button class="btn primary small" data-add-steam="${esc(item.id)}" type="button">IMPORT</button></div>`).join('');
-      } catch(error){ console.error(error); $('#steam-results').innerHTML=`<div class="empty">Steam search is unavailable right now. You can still add the game manually or <a href="https://store.steampowered.com/search/?term=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">open Steam Search ↗</a>.</div>`; }
+        if(!results.length){
+          const searchUrl=json?.searchUrl || `https://store.steampowered.com/search/?term=${encodeURIComponent(queryText)}&ignore_preferences=1`;
+          $('#steam-results').innerHTML=`<div class="empty">Steam returned no importable results from its API.<div class="search-fallback-actions"><a class="btn ghost small" href="${esc(searchUrl)}" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><button class="btn ghost small" id="steam-use-manual" type="button">USE MANUAL ADD</button></div></div>`;
+          $('#steam-use-manual')?.addEventListener('click',()=>{ closeModal(); openManager('game',-1); setTimeout(()=>{ const title=$('#f-title'); if(title){ title.value=queryText; title.focus(); } },60); });
+          return;
+        }
+        $('#steam-results').innerHTML=results.map(item=>`<div class="search-result"><img src="${esc(item.tiny_image||item.logo||item.header_image||'')}" alt=""><div><strong>${esc(item.name)}</strong><small>App ID ${esc(item.id)}${item.price?.final_formatted?` • ${esc(item.price.final_formatted)}`:''}</small></div><button class="btn primary small" data-add-steam="${esc(item.id)}" type="button">IMPORT</button></div>`).join('');
+      } catch(error){ console.error(error); $('#steam-results').innerHTML=`<div class="empty">Steam search could not be reached. Try the web search fallback below.<div class="search-fallback-actions"><a class="btn ghost small" href="https://store.steampowered.com/search/?term=${encodeURIComponent(queryText)}&ignore_preferences=1" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><a class="btn ghost small" href="https://steamdb.info/search/?a=app&q=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">SEARCH STEAMDB ↗</a></div></div>`; }
     };
     $('#steam-go')?.addEventListener('click',run); $('#steam-q')?.addEventListener('keydown',e=>{if(e.key==='Enter')run();});
   }
@@ -1332,27 +1396,39 @@
   applyLiveWallpaper();
   $$('#nav a').forEach(link => link.addEventListener('click', () => $('#nav')?.classList.remove('open')));
 
+  // Paint immediately from bundled/cache data. Cloud reconciliation happens in the background.
+  loadTheme();
+  renderAll();
+  renderDiscordProfile();
+  setTimeout(handleDeepLink, 60);
+  applyOwnerVisibility();
+  setupReveal();
+
   (async () => {
     if (cloudEnabled) {
       await loadOwnerSession();
-      const published = normalizeData(await loadPublishedData());
+      const published = await loadPublishedData();
       data = published;
       window.LUCIAN_DATA = clone(published);
       if (cloudSession && !cloudOwner) { await supabaseClient.auth.signOut(); cloudSession = null; }
+      loadTheme();
+      renderAll();
       supabaseClient.channel('lucian-vex-site-data').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'lucian_site_data', filter: 'id=eq.1' }, payload => {
-        if (!ownerMode) { data = normalizeData(payload.new?.data || data); window.LUCIAN_DATA = clone(data); loadTheme(); renderAll(); showToast('Site updated'); }
+        if (!ownerMode) {
+          data = normalizeData(payload.new?.data || data);
+          window.LUCIAN_DATA = clone(data);
+          try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
+          loadTheme();
+          renderAll();
+          showToast('Site updated');
+        }
       }).subscribe();
     } else {
-      const published = normalizeData(await loadPublishedData());
-      data = normalizeData(saved || published);
-      window.LUCIAN_DATA = clone(published);
+      data = normalizeData(saved || cachedPublished || window.LUCIAN_DATA || {});
+      window.LUCIAN_DATA = clone(data);
+      loadTheme();
+      renderAll();
     }
-    loadTheme();
-    renderAll();
-    renderDiscordProfile();
-    setTimeout(handleDeepLink, 60);
-    applyOwnerVisibility();
-    setupReveal();
   })();
   setupCursor();
 })();
