@@ -60,9 +60,13 @@
   function healthiestData(...candidates) {
     return clone(candidates.filter(Boolean).reduce((best, candidate) => dataHealthScore(candidate) > dataHealthScore(best) ? candidate : best, {}));
   }
+  // Deterministic first paint: data.js is the trusted local bootstrap source.
+  // Never let an old/empty localStorage or remote document replace a populated archive.
   const bundledData = dataCandidateFrom(window.LUCIAN_DATA) || {};
-  let data = healthiestData(bundledData, saved, cachedPublished);
-  data = normalizeData(data);
+  let data = normalizeData(bundledData);
+  if (dataHealthScore(data) === 0) {
+    data = normalizeData(healthiestData(saved, cachedPublished, {}));
+  }
   let dataHydrated = dataHealthScore(data) > 0;
   let dataHydrationRunning = false;
 
@@ -347,6 +351,12 @@
   }
 
   async function restoreOwnerModeFast() {
+    // The preference is only a UI hint. Real authorization still requires the
+    // persisted Supabase session + owner_uid RLS check before cloud writes.
+    if (wantsOwnerRestore()) {
+      ownerMode = true;
+      applyOwnerVisibility();
+    }
     if (!cloudEnabled || !supabaseClient || !wantsOwnerRestore()) return false;
     try {
       const { data: authData } = await supabaseClient.auth.getSession();
@@ -490,6 +500,8 @@
 
   function persist(message = 'Saved') {
     if (!ownerMode) return showToast('Owner mode is locked');
+    // Owner Mode may be restored optimistically; local draft is always immediate.
+    // Cloud sync only runs once the authenticated Supabase session is verified.
     // data is already normalized on load/import/edit. Avoid cloning the entire
     // archive here: that can be extremely expensive once many posters exist.
     buildArchiveIndex();
@@ -989,59 +1001,73 @@
 
   async function steamSearch() {
     if (!ownerMode) return showToast('Owner mode is locked');
-    openModal(`<p class="eyebrow">STEAM // GAME IMPORT</p><h2 id="modal-title">Search Steam</h2><p class="muted-note">Search the Steam catalog, preview the game and import it. Games outside Steam can still be added manually.</p><div class="search-row"><input id="steam-q" placeholder="Search game..." autocomplete="off"><button class="btn primary" id="steam-go" type="button">SEARCH</button></div><div id="steam-results" class="search-results"></div><p class="muted-note">Primary: Steam Store • Fallback: Steam HTML + CheapShark • Manual always available</p>`);
-    const run = async () => {
-      const queryText = $('#steam-q').value.trim(); if (!queryText) return showToast('Type a game name');
-      $('#steam-results').innerHTML = '<div class="empty">Searching Steam...</div>';
-      try {
-        let json=null;
-        const response=await fetch(`/.netlify/functions/steam-search?term=${encodeURIComponent(queryText)}`, {headers:{'Accept':'application/json'}});
-        if (response.ok) json=await response.json();
-        const results=(Array.isArray(json?.items)?json.items:[]).filter(item=>item?.name && item?.id).slice(0,20);
-        steamSearchCache.clear(); results.forEach(item=>steamSearchCache.set(String(item.id),item));
-        if(!results.length){
-          const searchUrl=json?.searchUrl || `https://store.steampowered.com/search/?term=${encodeURIComponent(queryText)}&ignore_preferences=1`;
-          $('#steam-results').innerHTML=`<div class="empty">Steam returned no importable results from its API.<div class="search-fallback-actions"><a class="btn ghost small" href="${esc(searchUrl)}" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><button class="btn ghost small" id="steam-use-manual" type="button">USE MANUAL ADD</button></div></div>`;
-          $('#steam-use-manual')?.addEventListener('click',()=>{ closeModal(); openManager('game',-1); setTimeout(()=>{ const title=$('#f-title'); if(title){ title.value=queryText; title.focus(); } },60); });
-          return;
-        }
-        $('#steam-results').innerHTML=results.map(item=>`<div class="search-result"><img src="${esc(item.tiny_image||item.logo||item.header_image||'')}" alt=""><div><strong>${esc(item.name)}</strong><small>App ID ${esc(item.id)}${item.price?.final_formatted?` • ${esc(item.price.final_formatted)}`:''}</small></div><button class="btn primary small" data-add-steam="${esc(item.id)}" type="button">IMPORT</button></div>`).join('');
-      } catch(error){
-        console.error(error);
-        // Final browser-side fallback to the public CheapShark catalog.
-        try {
-          const fallbackResponse = await fetch(`https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(queryText)}&limit=20`, {headers:{'Accept':'application/json'}});
-          if (fallbackResponse.ok) {
-            const fallbackJson = await fallbackResponse.json();
-            const fallback = (Array.isArray(fallbackJson)?fallbackJson:[]).filter(x=>x?.external).slice(0,20).map(x=>({
-              id:Number(x.steamAppID||0), appid:Number(x.steamAppID||0), steam_appid:Number(x.steamAppID||0), name:x.external,
-              tiny_image:x.thumb||'', header_image:x.steamAppID?`https://cdn.akamai.steamstatic.com/steam/apps/${x.steamAppID}/header.jpg`:x.thumb||'', sourceProvider:'CheapShark'
-            })).filter(x=>x.id);
-            if (fallback.length) {
-              steamSearchCache.clear(); fallback.forEach(item=>steamSearchCache.set(String(item.id),item));
-              $('#steam-results').innerHTML=fallback.map(item=>`<div class="search-result"><img src="${esc(item.tiny_image||'')}" alt=""><div><strong>${esc(item.name)}</strong><small>Steam App ID ${esc(item.id)} • CheapShark fallback</small></div><button class="btn primary small" data-add-steam="${esc(item.id)}" type="button">IMPORT</button></div>`).join('');
-              return;
-            }
-          }
-        } catch (_) {}
-        $('#steam-results').innerHTML=`<div class="empty">Game search could not reach an import provider.<div class="search-fallback-actions"><a class="btn ghost small" href="https://store.steampowered.com/search/?term=${encodeURIComponent(queryText)}&ignore_preferences=1" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><a class="btn ghost small" href="https://www.cheapshark.com/search?search=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">SEARCH CHEAPSHARK ↗</a><a class="btn ghost small" href="https://steamdb.info/search/?a=app&q=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">SEARCH STEAMDB ↗</a></div></div>`;
-      }
+    openModal(`<p class="eyebrow">GAME DATABASE // IMPORT</p><h2 id="modal-title">Search Games</h2><p class="muted-note">Fast browser search first, then the server-side Steam provider. Results can be imported directly into your archive.</p><div class="search-row"><input id="steam-q" placeholder="Search a game..." autocomplete="off"><button class="btn primary" id="steam-go" type="button">SEARCH</button></div><div id="steam-results" class="search-results"></div><p class="muted-note">Primary: CheapShark catalog • Secondary: Netlify/Steam • Manual add always available</p>`);
+    const cacheKey = query => String(query || '').trim().toLowerCase();
+    const showManual = queryText => {
+      const box = $('#steam-results');
+      if (!box) return;
+      box.innerHTML = `<div class="empty">No automatic game provider responded.<div class="search-fallback-actions"><a class="btn ghost small" href="https://store.steampowered.com/search/?ignore_preferences=1&term=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><a class="btn ghost small" href="https://www.cheapshark.com/search?search=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">OPEN CHEAPSHARK ↗</a><button class="btn ghost small" id="steam-use-manual" type="button">USE MANUAL ADD</button></div></div>`;
+      $('#steam-use-manual')?.addEventListener('click', () => { closeModal(); openManager('game', -1); setTimeout(() => { const title = $('#f-title'); if (title) { title.value = queryText; title.focus(); } }, 30); });
     };
-    $('#steam-go')?.addEventListener('click',run); $('#steam-q')?.addEventListener('keydown',e=>{if(e.key==='Enter')run();});
+    const paintResults = (results, provider) => {
+      const clean = results.filter(item => item?.name && item?.id).slice(0, 20);
+      if (!clean.length) return false;
+      steamSearchCache.clear(); clean.forEach(item => steamSearchCache.set(String(item.id), item));
+      const label = provider === 'cheapshark' ? 'CHEAPSHARK' : 'STEAM';
+      $('#steam-results').innerHTML = clean.map(item => `<div class="search-result"><img src="${esc(item.tiny_image || item.thumb || item.header_image || '')}" alt="" loading="lazy"><div><strong>${esc(item.name)}</strong><small>${label} • App ID ${esc(item.id)}</small></div><button class="btn primary small" data-add-steam="${esc(item.id)}" type="button">IMPORT</button></div>`).join('');
+      return true;
+    };
+    const run = async () => {
+      const queryText = $('#steam-q')?.value.trim() || '';
+      if (!queryText) return showToast('Type a game name');
+      const resultsBox = $('#steam-results');
+      resultsBox.innerHTML = '<div class="empty">SEARCHING GAME DATABASE…</div>';
+      const key = cacheKey(queryText);
+      if (steamSearchCache.has(`q:${key}`)) {
+        paintResults(steamSearchCache.get(`q:${key}`), 'cheapshark');
+        return;
+      }
+      // 1) CheapShark browser API: no Netlify required, and Steam App IDs are returned when available.
+      try {
+        const response = await fetch(`https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(queryText)}&limit=20`, { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+        if (response.ok) {
+          const json = await response.json();
+          const results = (Array.isArray(json) ? json : []).map(x => ({
+            id: Number(x.steamAppID || 0), appid: Number(x.steamAppID || 0), steam_appid: Number(x.steamAppID || 0), name: x.external,
+            tiny_image: x.thumb || '', header_image: x.steamAppID ? `https://cdn.akamai.steamstatic.com/steam/apps/${x.steamAppID}/header.jpg` : (x.thumb || ''),
+            sourceProvider: 'CheapShark'
+          })).filter(x => x.id && x.name);
+          if (paintResults(results, 'cheapshark')) { steamSearchCache.set(`q:${key}`, results); return; }
+        }
+      } catch (_) {}
+      // 2) Existing Netlify Steam function when the project is opened on Netlify.
+      try {
+        const response = await fetch(`/.netlify/functions/steam-search?term=${encodeURIComponent(queryText)}`, { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+        if (response.ok) {
+          const json = await response.json();
+          const results = Array.isArray(json?.items) ? json.items : [];
+          if (paintResults(results, 'steam')) { steamSearchCache.set(`q:${key}`, results); return; }
+        }
+      } catch (_) {}
+      showManual(queryText);
+    };
+    $('#steam-go')?.addEventListener('click', run);
+    $('#steam-q')?.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+    setTimeout(() => $('#steam-q')?.focus(), 30);
   }
 
   async function addFromSteam(appid) {
     if (!ownerMode) return showToast('Owner mode is locked');
-    const cached = steamSearchCache.get(String(appid)); if (!cached) return showToast('Steam result expired — search again');
-    let imported = makeGameFromSteam(cached);
-    if (data.games.some(g => String(g.steamAppId || '') === String(appid))) { closeModal(); return showToast('That Steam game is already in your archive'); }
-    try {
-      try {
-        const response = await fetch(`/.netlify/functions/steam-search?appid=${encodeURIComponent(appid)}`);
-        if (response.ok) { const json=await response.json(); if(json.game) imported=makeGameFromSteam({...cached,...json.game}); }
-      } catch (_) {}
-      data.games.push(imported); await persist('Steam game added'); closeModal(); location.href=pageUrl('gaming','#gaming');
-    } catch(error){ showToast('Could not import that Steam game'); console.error(error); }
+    const cached = steamSearchCache.get(String(appid));
+    if (!cached) return showToast('Search result expired — search again');
+    if (data.games.some(g => String(g.steamAppId || '') === String(appid))) { closeModal(); return showToast('That game is already in your archive'); }
+    const imported = makeGameFromSteam(cached);
+    data.games.push(imported);
+    buildArchiveIndex();
+    renderCurrentPage();
+    persist(`${imported.title} added`);
+    closeModal();
+    if (PAGE !== 'gaming') location.href = pageUrl('gaming');
   }
 
   function openManager(type, index = -1) {
@@ -1880,13 +1906,12 @@
       if (response.ok) {
         const json = await response.json();
         const candidate = normalizeData(dataCandidateFrom(json) || {});
-        if (dataHealthScore(candidate) > dataHealthScore(data)) {
+        // data.json is only a fallback. Never let it replace a populated data.js archive.
+        if (dataHealthScore(data) === 0 && dataHealthScore(candidate) > 0) {
           data = candidate;
           dataHydrated = true;
           try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(candidate)); } catch (_) {}
-          buildArchiveIndex();
-          renderedIndexVersion = archiveIndexVersion;
-          renderCurrentPage();
+          buildArchiveIndex(); renderedIndexVersion = archiveIndexVersion; renderCurrentPage();
         }
       }
     } catch (_) {}

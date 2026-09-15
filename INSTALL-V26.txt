@@ -1,0 +1,43 @@
+LUCIAN VEX V26 — STABILITY RELEASE
+====================================
+
+PURPOSE
+-------
+This update fixes the live-site regressions found in the GitHub Pages deployment:
+- Guaranteed local data.js bootstrap for Games / Anime / Skills / Profile.
+- Populated archive is protected from empty/stale cache or remote data.
+- Owner UI restores instantly from the previously verified preference, while
+  Supabase Auth + owner_uid remain the real cloud security boundary.
+- Full-area navigation links are native anchors with a larger hit area.
+- Game import works on GitHub Pages without requiring Netlify Functions first.
+- CheapShark is the browser-first game search provider; Netlify/Steam is secondary.
+- Existing page layout, posters, data formats, themes, Discord card, wallpaper,
+  categories, achievements, and other site features are preserved.
+
+SAFE INSTALL
+------------
+1. BACK UP your current About-me repo folder before doing anything.
+2. Extract/merge the V26 package into your existing About-me repository folder.
+3. REPLACE only the files included in this package.
+4. DO NOT delete or replace:
+   - data.js
+   - supabase-config.js
+   - images/ (including games/ and anime/)
+   - any other personal files not included in this package
+5. Open GitHub Desktop -> Changes.
+6. Before Push, confirm that data.js, supabase-config.js and images/ are NOT
+   listed as deleted or unexpectedly modified.
+7. Commit with something like: V26 stability repair.
+8. Push origin.
+
+IMPORTANT
+---------
+The site is currently served from GitHub Pages at:
+https://riyanabbasi025-collab.github.io/About-me/
+The browser-side CheapShark fallback is intentional so game search does not
+require a Netlify Function.
+
+ROLLBACK
+--------
+If anything looks wrong, restore the backup folder you made in step 1 and
+revert the GitHub commit before making further changes.
