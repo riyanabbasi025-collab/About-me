@@ -2,65 +2,73 @@
   'use strict';
 
   const KEY = 'lucian-vex-site-v5';
-  const PUBLISHED_CACHE_KEY = 'lucian-vex-published-cache-v1';
   const clone = value => JSON.parse(JSON.stringify(value));
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
-  const PAGE = document.body?.dataset?.page || 'home';
-  const pageUrl = (page, hash = '') => `${page}.html${hash}`;
 
   const SUPABASE_CONFIG = window.LUCIAN_SUPABASE_CONFIG || {};
   const SUPABASE_URL = String(SUPABASE_CONFIG.url || '').trim();
   const SUPABASE_KEY = String(SUPABASE_CONFIG.publishableKey || '').trim();
-  let cloudEnabled = Boolean(SUPABASE_URL && SUPABASE_KEY);
-  let supabaseClient = null;
-  // Start importing Supabase immediately; owner interactions can reuse the same in-flight promise.
-  let supabaseWarmupStarted = false;
-  let supabaseLoading = null;
+  const cloudEnabled = Boolean(window.supabase && SUPABASE_URL && SUPABASE_KEY);
+  const supabaseClient = cloudEnabled ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
   let cloudSession = null;
-
-  async function ensureSupabaseClient() {
-    if (supabaseClient) return supabaseClient;
-    if (!SUPABASE_URL || !SUPABASE_KEY) { cloudEnabled = false; return null; }
-    if (supabaseLoading) return supabaseLoading;
-    supabaseLoading = (async () => {
-      try {
-        const mod = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
-        const createClient = mod.createClient || mod.default?.createClient;
-        if (!createClient) throw new Error('Supabase client factory unavailable');
-        supabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-        cloudEnabled = true;
-        return supabaseClient;
-      } catch (error) {
-        cloudEnabled = false;
-        console.warn('Lucian Vex: Supabase client could not be loaded.', error);
-        return null;
-      }
-    })();
-    return supabaseLoading;
-  }
-  if (cloudEnabled) {
-    supabaseWarmupStarted = true;
-    ensureSupabaseClient().catch(() => {});
-  }
   let cloudOwner = false;
+  let ownerMode = false;
   let saved = null;
-  let cachedPublished = null;
-  let publishedUpdatedAt = '';
   try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) {}
-  try { cachedPublished = JSON.parse(localStorage.getItem(PUBLISHED_CACHE_KEY) || 'null'); } catch (_) {}
-  function archiveCounts(value) {
-    const v = value && typeof value === 'object' ? value : {};
-    return { games: Array.isArray(v.games) ? v.games.length : 0, anime: Array.isArray(v.anime) ? v.anime.length : 0, skills: Array.isArray(v.skills) ? v.skills.length : 0, links: Array.isArray(v.links) ? v.links.length : 0 };
-  }
-  function dataHealthScore(value) {
-    const c = archiveCounts(value);
-    return (c.games * 100000) + (c.anime * 100000) + (c.skills * 100) + c.links;
-  }
-  function healthiestData(...candidates) {
-    return clone(candidates.filter(Boolean).reduce((best, candidate) => dataHealthScore(candidate) > dataHealthScore(best) ? candidate : best, {}));
+
+  const fallbackData = {
+    profile: {}, skills: [], games: [], anime: [], links: [], categories: []
+  };
+  let data = clone(window.LUCIAN_DATA && typeof window.LUCIAN_DATA === 'object' ? window.LUCIAN_DATA : (saved || fallbackData));
+  data.profile ||= {};
+  data.skills = Array.isArray(data.skills) ? data.skills : [];
+  data.games = Array.isArray(data.games) ? data.games : [];
+  data.anime = Array.isArray(data.anime) ? data.anime : [];
+  data.links = Array.isArray(data.links) ? data.links : [];
+
+  async function loadPublishedData() {
+    const bundled = normalizeData(window.LUCIAN_DATA || {});
+    if (cloudEnabled) {
+      try {
+        const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data,updated_at').eq('id', 1).single();
+        if (error) throw error;
+        if (row?.data && typeof row.data === 'object') {
+          const remote = normalizeData(row.data);
+          const rc = { g: remote.games.length, a: remote.anime.length, s: remote.skills.length };
+          const bc = { g: bundled.games.length, a: bundled.anime.length, s: bundled.skills.length };
+          if ((rc.g + rc.a + rc.s) > 0 || (bc.g + bc.a + bc.s) === 0) return remote;
+        }
+      } catch (error) {
+        console.warn('Lucian Vex: cloud data unavailable; using bundled/local data.', error);
+      }
+    }
+    return bundled;
   }
 
+  async function loadOwnerSession() {
+    if (!cloudEnabled) return null;
+    try {
+      const { data: authData } = await supabaseClient.auth.getSession();
+      cloudSession = authData?.session || null;
+      cloudOwner = false;
+      if (cloudSession?.user) {
+        const { data: row, error } = await supabaseClient.from('lucian_site_data').select('owner_uid').eq('id', 1).single();
+        if (!error && row?.owner_uid) cloudOwner = String(row.owner_uid) === String(cloudSession.user.id);
+      }
+      return cloudSession;
+    } catch (_) { return null; }
+  }
+
+  async function loadCloudForOwner() {
+    if (!cloudEnabled || !cloudSession) return false;
+    try {
+      const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data').eq('id', 1).single();
+      if (error) throw error;
+      if (row?.data) { data = normalizeData(row.data); return true; }
+    } catch (error) { console.error(error); showToast('Cloud data could not be loaded'); }
+    return false;
+  }
 
 
   const BUILTIN_CATEGORIES = [
@@ -73,111 +81,9 @@
     { id: 'paused', label: 'PAUSED', builtin: true },
     { id: 'dropped', label: 'DROPPED', builtin: true }
   ];
-  // Deterministic first paint: data.js is the trusted local bootstrap source.
-  // Never let an old/empty localStorage or remote document replace a populated archive.
-  const bundledData = dataCandidateFrom(window.LUCIAN_DATA) || {};
-  let data = normalizeData(bundledData);
-  if (dataHealthScore(data) === 0) {
-    data = normalizeData(healthiestData(saved, cachedPublished, {}));
-  }
-  let dataHydrated = dataHealthScore(data) > 0;
-  let dataHydrationRunning = false;
-
-  async function loadPublishedData() {
-    if (SUPABASE_URL && SUPABASE_KEY) {
-      try {
-        const endpoint = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/lucian_site_data?id=eq.1&select=data,updated_at`;
-        const response = await fetch(endpoint, {
-          method: 'GET',
-          headers: {
-            apikey: SUPABASE_KEY,
-            Authorization: `Bearer ${SUPABASE_KEY}`,
-            Accept: 'application/json'
-          },
-          cache: 'no-store'
-        });
-        if (response.ok) {
-          const rows = await response.json();
-          const row = Array.isArray(rows) ? rows[0] : null;
-          if (row?.data && typeof row.data === 'object') {
-            publishedUpdatedAt = String(row.updated_at || '');
-            const normalized = normalizeData(dataCandidateFrom(row.data) || {});
-            const remoteCount = archiveCounts(normalized);
-            const localCount = archiveCounts(data);
-            const remoteHasArchive = remoteCount.games > 0 || remoteCount.anime > 0;
-            const localHasArchive = localCount.games > 0 || localCount.anime > 0;
-            // Never allow an empty remote payload to erase a populated local/bundled archive.
-            if (!remoteHasArchive && localHasArchive) return normalizeData(data);
-            try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(normalized)); } catch (_) {}
-            return normalized;
-          }
-        }
-      } catch (error) {
-        console.warn('Lucian Vex: background cloud read failed; using cached/bundled data.', error);
-      }
-    }
-    return normalizeData(dataCandidateFrom(cachedPublished) || dataCandidateFrom(saved) || dataCandidateFrom(window.LUCIAN_DATA) || {});
-  }
-
-  async function loadOwnerSession() {
-    await ensureSupabaseClient();
-    if (!cloudEnabled || !supabaseClient) return null;
-    try {
-      const { data: authData } = await supabaseClient.auth.getSession();
-      cloudSession = authData?.session || null;
-      cloudOwner = false;
-      if (cloudSession?.user) {
-        const { data: row, error } = await supabaseClient.from('lucian_site_data').select('owner_uid').eq('id', 1).single();
-        if (!error && row?.owner_uid) {
-          cloudOwner = String(row.owner_uid) === String(cloudSession.user.id);
-          if (cloudOwner) { try { localStorage.setItem(VERIFIED_OWNER_UID_KEY, String(row.owner_uid)); } catch (_) {} }
-        }
-      }
-      return cloudSession;
-    } catch (_) { return null; }
-  }
-
-  async function loadCloudForOwner() {
-    await ensureSupabaseClient();
-    if (!cloudEnabled || !supabaseClient || !cloudSession) return false;
-    try {
-      const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data').eq('id', 1).single();
-      if (error) throw error;
-      if (row?.data) { data = normalizeData(row.data); return true; }
-    } catch (error) { console.error(error); showToast('Cloud data could not be loaded'); }
-    return false;
-  }
 
   function slugCategory(value) {
     return String(value || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 42);
-  }
-
-  function normalizeCategoryToken(value) {
-    if (value == null) return '';
-    if (typeof value === 'object') return String(value.id || value.slug || value.name || value.label || '').trim();
-    return String(value).trim();
-  }
-
-  function categoryIdFromToken(token, categorySource = data?.categories || []) {
-    const raw = normalizeCategoryToken(token);
-    if (!raw) return '';
-    const slug = slugCategory(raw);
-    const lower = raw.toLowerCase();
-    const aliases = {
-      favorite:'favorite', favourites:'favorite', favorites:'favorite', 'my favorites':'favorite', 'my favourite games':'favorite', favourite:'favorite',
-      rotation:'rotation', 'in rotation':'rotation', 'games in rotation':'rotation',
-      want:'want', 'want to play':'want', wishlist:'want', backlog:'want', planned:'want', 'games i want to play':'want',
-      completed:'completed', complete:'completed', finished:'completed', done:'completed',
-      watching:'watching', 'currently watching':'watching',
-      planning:'planning', plannedanime:'planning', plan:'planning',
-      paused:'paused', pause:'paused',
-      dropped:'dropped', drop:'dropped'
-    };
-    if (aliases[lower]) return aliases[lower];
-    const byId = (categorySource || []).find(x => String(x?.id || '').trim().toLowerCase() === lower || slugCategory(x?.id) === slug);
-    if (byId) return String(byId.id);
-    const byLabel = (categorySource || []).find(x => String(x?.label || '').trim().toLowerCase() === lower || slugCategory(x?.label) === slug);
-    return byLabel ? String(byLabel.id) : (slug || raw.toLowerCase());
   }
 
   function normalizeCategoryLibrary(value) {
@@ -185,8 +91,8 @@
     const seen = new Set();
     const result = [];
     [...BUILTIN_CATEGORIES, ...source].forEach(item => {
-      const label = String(item?.label || item?.name || item?.id || '').trim();
-      const id = slugCategory(item?.id || item?.slug || label);
+      const id = String(item?.id || slugCategory(item?.label)).trim();
+      const label = String(item?.label || '').trim();
       if (!id || !label || seen.has(id)) return;
       seen.add(id);
       result.push({ id, label, builtin: Boolean(item?.builtin || BUILTIN_CATEGORIES.some(x => x.id === id)) });
@@ -196,17 +102,10 @@
 
   function legacyCategoryId(type, item) {
     if (type === 'game') {
-      const tokens = [];
-      if (item?.category != null) tokens.push(item.category);
-      if (item?.status != null) tokens.push(item.status);
-      if (item?.favorite === true) tokens.push('favorite');
-      for (const token of tokens) {
-        const raw = normalizeCategoryToken(token).toLowerCase();
-        if (['favorite','favourite','favorites','favourites','my favorites','my favourite games'].includes(raw)) return 'favorite';
-        if (['want','want to play','wishlist','backlog','planned'].includes(raw)) return 'want';
-        if (['completed','complete','finished','done'].includes(raw)) return 'completed';
-        if (['rotation','in rotation','games in rotation'].includes(raw)) return 'rotation';
-      }
+      const raw = String(item?.category || '').trim().toLowerCase();
+      if (['favorite','favourite','favorites','favourites'].includes(raw)) return 'favorite';
+      if (['want','want to play','wishlist','backlog','planned'].includes(raw)) return 'want';
+      if (['completed','complete','finished','done'].includes(raw)) return 'completed';
       return 'rotation';
     }
     if (type === 'anime') {
@@ -217,22 +116,14 @@
   }
 
   function itemCategories(type, item, categorySource = data?.categories || []) {
-    const categories = Array.isArray(categorySource) ? categorySource : [];
-    const libraryIds = new Set(categories.map(x => String(x?.id || '')));
-    const rawCats = [];
-    if (Array.isArray(item?.categories)) rawCats.push(...item.categories);
-    if (item?.category != null) rawCats.push(item.category);
-    if (type === 'anime' && item?.status != null) rawCats.push(item.status);
-    if (item?.favorite === true) rawCats.push('favorite');
-
-    let cats = rawCats.map(token => categoryIdFromToken(token, categories))
-      .filter(Boolean)
-      .filter(id => libraryIds.has(id));
+    const libraryIds = new Set((categorySource || []).map(x => x.id));
+    let cats = Array.isArray(item?.categories) ? item.categories.map(x => String(x).trim()).filter(Boolean) : [];
     if (!cats.length) {
       const legacy = legacyCategoryId(type, item);
-      if (legacy && libraryIds.has(legacy)) cats.push(legacy);
+      if (legacy) cats.push(legacy);
     }
-    return [...new Set(cats)];
+    if (type === 'anime' && item?.favorite && !cats.includes('favorite')) cats.push('favorite');
+    return [...new Set(cats.filter(id => libraryIds.has(id)))];
   }
 
   function categoryLabel(id) {
@@ -246,25 +137,16 @@
     value.games ||= [];
     value.anime ||= [];
     value.links ||= [];
-    if (!value.profile.contact) value.profile.contact = {};
-    if (!value.profile.discordProfile && value.profile.discord_profile) value.profile.discordProfile = value.profile.discord_profile;
-    if (!value.profile.liveWallpaper && value.profile.discordProfile?.liveWallpaper) value.profile.liveWallpaper = clone(value.profile.discordProfile.liveWallpaper);
     value.categories = normalizeCategoryLibrary(value.categories);
-
     value.games.forEach(item => {
       item.categories = itemCategories('game', item, value.categories);
       item.category = item.categories[0] || 'rotation';
-      item.achievements = Array.isArray(item.achievements) ? item.achievements : (item.achievements ? [String(item.achievements)] : []);
-      item.rating = item.rating === '' || item.rating == null ? '' : Number(item.rating) || 0;
-      item.source = item.source || (item.steamAppId ? 'steam' : 'manual');
-      if (item.steamAppId && !item.steamUrl) item.steamUrl = `https://store.steampowered.com/app/${item.steamAppId}/`;
     });
     value.anime.forEach(item => {
       item.categories = itemCategories('anime', item, value.categories);
       const statusCategory = item.categories.find(id => ['watching','completed','planning','paused','dropped'].includes(id));
       if (statusCategory) item.status = statusCategory.charAt(0).toUpperCase() + statusCategory.slice(1);
       item.favorite = item.categories.includes('favorite') || Boolean(item.favorite);
-      if (item.favorite && !item.categories.includes('favorite')) item.categories.push('favorite');
     });
     return value;
   }
@@ -274,52 +156,6 @@
   const toast = $('#toast');
   let animeFilter = 'all';
   let gameFilter = 'all';
-  let gameSearchQuery = '';
-  let animeSearchQuery = '';
-  let archiveIndexVersion = 0;
-  let renderedIndexVersion = -1;
-
-  // Fast archive index: filtering/searching never waits on Supabase and never
-  // recalculates category/search data for every card click.
-  let archiveIndex = {
-    games: [],
-    anime: [],
-    gameCategories: [],
-    animeCategories: []
-  };
-
-  function buildArchiveIndex() {
-    const build = (type, items) => (items || []).map((item, index) => {
-      const categories = itemCategories(type, item);
-      const categoryNames = categories.map(categoryLabel);
-      const achievements = Array.isArray(item.achievements) ? item.achievements : [];
-      const hay = type === 'game'
-        ? [item.title, item.status, item.type, item.goal, achievements.join(' '), ...categoryNames].join(' ').toLowerCase()
-        : [item.title, item.status, item.notes, ...categoryNames].join(' ').toLowerCase();
-      return { index, item, categories, catSet: new Set(categories), categoryNames, hay };
-    });
-
-    archiveIndex.games = build('game', data.games);
-    archiveIndex.anime = build('anime', data.anime);
-
-    const used = type => {
-      const source = type === 'game' ? archiveIndex.games : archiveIndex.anime;
-      const ids = new Set();
-      source.forEach(entry => entry.categories.forEach(id => ids.add(id)));
-      return (data.categories || []).filter(cat => ids.has(cat.id));
-    };
-    archiveIndex.gameCategories = used('game');
-    archiveIndex.animeCategories = used('anime');
-    archiveIndexVersion += 1;
-  }
-
-  function setFilterActive(type, id) {
-    const toolbar = type === 'game' ? $('.game-toolbar') : $('.anime-toolbar');
-    if (!toolbar) return;
-    toolbar.querySelectorAll('[data-category-filter]').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.categoryFilter === id);
-    });
-  }
   let currentPosterData = '';
   let currentPosterTarget = null;
   const steamSearchCache = new Map();
@@ -327,107 +163,52 @@
   const esc = (value = '') => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));
   const safeUrl = value => String(value || '').trim();
   const clamp = (n, min, max) => Math.min(max, Math.max(min, Number(n) || 0));
-  const OWNER_PIN = 'LVX-9K7C-Q4PM-2R8N';
-  const OWNER_PREF_KEY = 'lucian-vex-owner-preference-v2';
-  const VERIFIED_OWNER_UID_KEY = 'lucian-vex-verified-owner-uid-v1';
-  let ownerMode = false;
-  let ownerWarmup = null;
-
-  function rememberOwnerPreference(enabled) {
-    try { localStorage.setItem(OWNER_PREF_KEY, enabled ? '1' : '0'); } catch (_) {}
-  }
-
-  function wantsOwnerRestore() {
-    try { return localStorage.getItem(OWNER_PREF_KEY) === '1'; } catch (_) { return false; }
-  }
+  const OWNER_INTENT_KEY = 'lucian-vex-owner-intent-v1';
 
   function applyOwnerVisibility() {
     document.body.classList.toggle('owner-unlocked', ownerMode);
     $$('.owner-only').forEach(el => {
       el.hidden = !ownerMode;
       el.setAttribute('aria-hidden', String(!ownerMode));
+      el.style.removeProperty('display');
     });
     const state = $('#owner-state');
     if (state) state.textContent = ownerMode ? 'OWNER MODE' : 'LOCKED';
   }
 
-  async function restoreOwnerModeFast() {
-    // The preference is only a UI hint. Real authorization still requires the
-    // persisted Supabase session + owner_uid RLS check before cloud writes.
-    if (wantsOwnerRestore()) {
-      ownerMode = true;
-      applyOwnerVisibility();
-    }
-    if (!cloudEnabled || !supabaseClient || !wantsOwnerRestore()) return false;
-    try {
-      const { data: authData } = await supabaseClient.auth.getSession();
-      const session = authData?.session || null;
-      if (!session?.user) return false;
-      cloudSession = session;
-      let verifiedUid = '';
-      try { verifiedUid = String(localStorage.getItem(VERIFIED_OWNER_UID_KEY) || ''); } catch (_) {}
-      if (verifiedUid && verifiedUid === String(session.user.id)) {
-        // Optimistic UI restore from a previously verified owner session.
-        ownerMode = true;
-        cloudOwner = true;
-        applyOwnerVisibility();
-        // Re-verify the owner UID in the background; RLS remains the real data guard.
-        loadOwnerSession().then(() => {
-          if (!cloudOwner || !cloudSession) { ownerMode = false; rememberOwnerPreference(false); applyOwnerVisibility(); }
-        }).catch(() => {});
-        return true;
-      }
-      await loadOwnerSession();
-      if (cloudOwner && cloudSession) {
-        ownerMode = true;
-        applyOwnerVisibility();
-        return true;
-      }
-    } catch (_) {}
-    return false;
-  }
-
   async function unlockOwner() {
-    if (ownerWarmup) await ownerWarmup;
-    if (ownerMode && cloudOwner && cloudSession) return true;
-    if (!cloudEnabled || !supabaseClient) {
-      const attempt = prompt('OWNER ACCESS\nEnter your private owner code:');
-      if (attempt === OWNER_PIN) { ownerMode = true; rememberOwnerPreference(true); applyOwnerVisibility(); showToast('Owner mode unlocked'); return true; }
-      if (attempt !== null) showToast('Access denied');
-      return false;
-    }
+    if (!cloudEnabled || !supabaseClient) return showToast('Secure owner login is unavailable — check Supabase configuration');
+    await loadOwnerSession();
     if (cloudOwner && cloudSession) {
       ownerMode = true;
-      rememberOwnerPreference(true);
+      try { localStorage.setItem(OWNER_INTENT_KEY, '1'); } catch (_) {}
       applyOwnerVisibility();
-      // Cloud state is already being reconciled in the background; don't block the UI.
-      loadCloudForOwner().then(() => { buildArchiveIndex(); renderCurrentPage(); }).catch(() => {});
+      if (!window.__ownerCloudLoaded) { window.__ownerCloudLoaded = true; loadCloudForOwner().then(() => { data = normalizeData(data); renderAll(); }); }
       showToast('Owner mode unlocked');
       return true;
     }
-    openModal(`<p class="eyebrow">SECURE OWNER ACCESS</p><h2 id="modal-title">Lucian Vex Cloud Login</h2><p class="muted-note">This replaces the old local PIN with a real account. Your website edits are stored in the shared cloud database.</p><div class="form-field"><label>EMAIL</label><input id="cloud-email" type="email" autocomplete="email" placeholder="you@example.com"></div><div class="form-field"><label>PASSWORD</label><input id="cloud-password" type="password" autocomplete="current-password" placeholder="Your password"></div><div class="form-grid two"><button class="btn primary form-submit" id="cloud-login" type="button">SIGN IN</button><button class="btn ghost form-submit" id="cloud-signup" type="button">CREATE ACCOUNT</button></div><p class="muted-note">Create the owner account once in Supabase, then use SIGN IN here.</p>`);
-    const doLogin = async (signup=false) => {
-      const email = $('#cloud-email').value.trim(); const password = $('#cloud-password').value;
+    openModal(`<p class="eyebrow">SECURE OWNER ACCESS</p><h2 id="modal-title">Lucian Vex Cloud Login</h2><p class="muted-note">Only the Supabase owner account can unlock editing. Your session remains active across pages and refreshes.</p><div class="form-field"><label>EMAIL</label><input id="cloud-email" type="email" autocomplete="email" placeholder="you@example.com"></div><div class="form-field"><label>PASSWORD</label><input id="cloud-password" type="password" autocomplete="current-password" placeholder="Your password"></div><div class="form-grid two"><button class="btn primary form-submit" id="cloud-login" type="button">SIGN IN</button><button class="btn ghost form-submit" id="cloud-signup" type="button">CREATE ACCOUNT</button></div>`);
+    const doLogin = async signup => {
+      const email = $('#cloud-email')?.value.trim(); const password = $('#cloud-password')?.value || '';
       if (!email || !password) return showToast('Enter email and password');
       const result = signup ? await supabaseClient.auth.signUp({ email, password }) : await supabaseClient.auth.signInWithPassword({ email, password });
       if (result.error) return showToast(result.error.message);
-      cloudSession = result.data.session || null;
-      if (!cloudSession) { closeModal(); showToast('Account created — check your email if confirmation is enabled'); return; }
+      if (!result.data?.session) return showToast('Account created — finish verification, then sign in');
       await loadOwnerSession();
-      if (!cloudOwner) { await supabaseClient.auth.signOut(); cloudSession = null; closeModal(); showToast('This account is not the Lucian Vex owner'); return; }
-      ownerMode = true; rememberOwnerPreference(true); closeModal(); applyOwnerVisibility(); showToast('Owner mode unlocked');
-      loadCloudForOwner().then(() => { buildArchiveIndex(); renderCurrentPage(); }).catch(() => {});
+      if (!cloudOwner) { await supabaseClient.auth.signOut(); cloudSession = null; return showToast('That account is not the Lucian Vex owner'); }
+      ownerMode = true;
+      try { localStorage.setItem(OWNER_INTENT_KEY, '1'); } catch (_) {}
+      await loadCloudForOwner();
+      applyOwnerVisibility(); closeModal(); renderAll(); showToast('Owner mode unlocked');
     };
-    $('#cloud-login').addEventListener('click', () => doLogin(false));
-    $('#cloud-signup').addEventListener('click', () => doLogin(true));
+    $('#cloud-login')?.addEventListener('click', () => doLogin(false));
+    $('#cloud-signup')?.addEventListener('click', () => doLogin(true));
     return false;
   }
 
-  async function lockOwner() {
+  function lockOwner() {
     ownerMode = false;
-    rememberOwnerPreference(false);
-    // Keep the authenticated session alive so re-enabling owner mode is instant.
-    // Real protection remains Supabase Auth + the database RLS policies.
+    try { localStorage.removeItem(OWNER_INTENT_KEY); } catch (_) {}
     applyOwnerVisibility();
     closeModal();
     showToast('Owner mode locked');
@@ -441,91 +222,49 @@
     showToast.timer = setTimeout(() => toast.classList.remove('show'), 1800);
   }
 
-  let cloudWriteRunning = false;
-  let cloudSaveRevision = 0;
-  let cloudSyncedRevision = 0;
-  let cloudRetryTimer = 0;
-  let lastCloudErrorToast = 0;
+  let cloudSyncTimer = null;
+  let cloudSyncRunning = false;
+  let cloudSyncQueued = false;
 
-  const LOCAL_DIRTY_KEY = 'lucian-vex-local-dirty-v1';
-  function persistLocalDraft() {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(data));
-      localStorage.setItem(LOCAL_DIRTY_KEY, String(Date.now()));
-      window.LUCIAN_DATA = data;
-    } catch (error) {
-      showToast('Local storage is full — use smaller posters');
-      console.error(error);
-    }
-  }
-
-  async function flushCloudSync() {
-    if (cloudWriteRunning || !cloudEnabled || !supabaseClient || !cloudSession) return;
-    cloudWriteRunning = true;
-    try {
-      while (cloudSyncedRevision < cloudSaveRevision && cloudEnabled && supabaseClient && cloudSession) {
-        const targetRevision = cloudSaveRevision;
-        const snapshot = data;
+  function scheduleCloudSync(message) {
+    if (!cloudEnabled || !supabaseClient || !cloudSession || !cloudOwner || !ownerMode) return;
+    clearTimeout(cloudSyncTimer);
+    cloudSyncTimer = setTimeout(async () => {
+      if (cloudSyncRunning) { cloudSyncQueued = true; return; }
+      cloudSyncRunning = true;
+      let ok = false;
+      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
         try {
-          const { error } = await supabaseClient.from('lucian_site_data').update({ data: snapshot, updated_at: new Date().toISOString() }).eq('id', 1);
+          const payload = clone(data);
+          const { error } = await supabaseClient.from('lucian_site_data').update({ data: payload, updated_at: new Date().toISOString() }).eq('id', 1);
           if (error) throw error;
-          cloudSyncedRevision = targetRevision;
-          try { localStorage.removeItem(KEY); localStorage.removeItem(LOCAL_DIRTY_KEY); } catch (_) {}
-          setTimeout(() => {
-            try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(snapshot)); } catch (_) {}
-          }, 0);
-          if (cloudSyncedRevision === cloudSaveRevision) showToast('Saved • synced');
+          ok = true;
         } catch (error) {
-          console.error(error);
-          const now = Date.now();
-          if (now - lastCloudErrorToast > 2500) {
-            showToast('Saved locally • cloud retrying');
-            lastCloudErrorToast = now;
-          }
-          cloudWriteRunning = false;
-          clearTimeout(cloudRetryTimer);
-          cloudRetryTimer = setTimeout(() => flushCloudSync(), 2500);
-          return;
+          await new Promise(r => setTimeout(r, 450 * (attempt + 1)));
         }
       }
-    } finally {
-      cloudWriteRunning = false;
-    }
-  }
-
-  function requestCloudSync() {
-    if (!cloudEnabled || !cloudSession || !supabaseClient) return;
-    cloudSaveRevision += 1;
-    flushCloudSync();
+      cloudSyncRunning = false;
+      if (ok) showToast(message + ' • synced'); else showToast(message + ' • saved locally, cloud retry pending');
+      if (cloudSyncQueued) { cloudSyncQueued = false; scheduleCloudSync(message); }
+    }, 80);
   }
 
   function persist(message = 'Saved') {
     if (!ownerMode) return showToast('Owner mode is locked');
-    // Owner Mode may be restored optimistically; local draft is always immediate.
-    // Cloud sync only runs once the authenticated Supabase session is verified.
-    // data is already normalized on load/import/edit. Avoid cloning the entire
-    // archive here: that can be extremely expensive once many posters exist.
-    buildArchiveIndex();
-    renderedIndexVersion = archiveIndexVersion;
-    // Keep a durable local draft. For normal-sized archives this is immediate; for very large
-    // archives it is deferred so the UI never freezes. The cloud writer remains authoritative.
     try {
-      const roughSize = JSON.stringify(data).length;
-      if (roughSize < 350000) persistLocalDraft();
-      else setTimeout(persistLocalDraft, 0);
-    } catch (_) { setTimeout(persistLocalDraft, 0); }
-    // The local state is the source of truth for the current interaction.
-    // Rendering never waits for a network round-trip.
-    renderCurrentPage();
-    if (cloudEnabled && cloudSession && supabaseClient) {
-      requestCloudSync();
-      showToast(message + ' • syncing');
-    } else {
-      showToast(message + ' • local');
-    }
+      data = normalizeData(data);
+      data.recentUpdates = Array.isArray(data.recentUpdates) ? data.recentUpdates : [];
+      data.recentUpdates.unshift({ type:'SYNC', text:String(message), time:new Date().toLocaleString([], {dateStyle:'medium', timeStyle:'short'}) });
+      data.recentUpdates = data.recentUpdates.slice(0, 20);
+      localStorage.setItem(KEY, JSON.stringify(data));
+    } catch (error) { console.error(error); showToast('Local save failed — storage is full'); return; }
+    renderAll();
+    scheduleCloudSync(message);
   }
 
+
   function openModal(html) {
+    if (!modal || !content) return;
     content.innerHTML = html;
     modal.classList.add('show');
     modal.setAttribute('aria-hidden', 'false');
@@ -533,6 +272,7 @@
   }
 
   function closeModal() {
+    if (!modal || !content) return;
     modal.classList.remove('show');
     modal.setAttribute('aria-hidden', 'true');
     content.innerHTML = '';
@@ -546,19 +286,18 @@
 
   function renderProfile() {
     const p = data.profile || {};
-    const setText = (id, value) => { const el = $(id); if (el) el.textContent = value; };
-    setText('#profile-name', p.name || 'Lucian Vex');
-    setText('#profile-bio', p.bio || '');
-    setText('#discord', p.discord || '');
-    setText('#email', p.email || '');
+    if ($('#profile-name')) $('#profile-name').textContent = p.name || 'Lucian Vex';
+    if ($('#profile-bio')) $('#profile-bio').textContent = p.bio || '';
+    if ($('#discord')) $('#discord').textContent = p.discord || '';
+    if ($('#email')) $('#email').textContent = p.email || '';
     const contact = p.contact || {};
     const contactTitle = $('#contact-title');
     const contactText = $('#contact-text');
     if (contactTitle) contactTitle.innerHTML = esc(contact.title || 'Contact') + ' <i>me</i>';
     if (contactText) contactText.textContent = contact.text || 'Open to conversations, collaborations, games, projects, or just a good conversation.';
-    setText('#stat-skills', data.skills.length);
-    setText('#stat-games', data.games.length);
-    setText('#stat-anime', data.anime.length);
+    if ($('#stat-skills')) $('#stat-skills').textContent = data.skills.length;
+    if ($('#stat-games')) $('#stat-games').textContent = data.games.length;
+    if ($('#stat-anime')) $('#stat-anime').textContent = data.anime.length;
     const chips = Array.isArray(p.chips) && p.chips.length ? p.chips : ['SELF-TAUGHT','CREATIVE','GAMER','BUILDER'];
     const chipEl = $('#profile-chips');
     if (chipEl) chipEl.innerHTML = chips.map(c => `<span>${esc(c)}</span>`).join('');
@@ -569,10 +308,10 @@
     if (!el) return;
     if (!data.skills.length) { el.innerHTML = '<div class="empty">No skills yet. Use ADD SKILL to create one.</div>'; return; }
     el.innerHTML = data.skills.map((item, i) => `
-      <article class="card skill-card" id="skill-${i}">
+      <article class="card skill-card">
         <div class="skill-top"><span class="skill-name">${esc(item.name)}</span><span class="level">${clamp(item.level,0,100)}%</span></div>
         <div class="bar"><span style="width:${clamp(item.level,0,100)}%"></span></div>
-        <p class="card-desc">${esc(item.desc || '')}</p>
+        <p class="card-desc">${esc(item.desc)}</p>
         <div class="card-actions" style="padding:16px 0 0"><span></span><span>
           <button class="icon-btn owner-only" data-edit="skill" data-i="${i}" type="button">EDIT</button>
           <button class="icon-btn owner-only" data-del="skill" data-i="${i}" type="button">DELETE</button>
@@ -585,258 +324,94 @@
   }
 
   function renderCategoryFilters(type) {
-    const toolbar = type === 'game' ? $('.game-toolbar') : $('.anime-toolbar');
+    const toolbar = type === 'game' ? ($('#game-filters') || $('.game-toolbar')) : ($('#anime-filters') || $('.anime-toolbar'));
     if (!toolbar) return;
-    const cats = type === 'game' ? archiveIndex.gameCategories : archiveIndex.animeCategories;
-    const filter = type === 'game' ? gameFilter : animeFilter;
-    const allLabel = type === 'game' ? 'ALL GAMES' : 'ALL ANIME';
-    toolbar.innerHTML = `<button class=\"filter ${filter==='all'?'active':''}\" data-category-filter=\"all\" type=\"button\">${allLabel}</button>` + cats.map(cat => `<button class=\"filter ${filter===cat.id?'active':''}\" data-category-filter=\"${esc(cat.id)}\" type=\"button\">${esc(cat.label)}</button>`).join('');
+    const used = new Set();
+    (data[type === 'game' ? 'games' : 'anime'] || []).forEach(item => itemCategories(type, item).forEach(id => used.add(id)));
+    const cats = (data.categories || []).filter(cat => used.has(cat.id));
+    toolbar.innerHTML = `<button class="${type === 'game' ? 'game-filter' : 'filter'} filter active" data-category-filter="all" type="button">ALL ${type === 'game' ? 'GAMES' : ''}</button>` + cats.map(cat => `<button class="${type === 'game' ? 'game-filter' : 'filter'} filter" data-category-filter="${esc(cat.id)}" type="button">${esc(cat.label)}</button>`).join('');
+    if (type === 'game') gameFilter = gameFilter === 'all' || cats.some(x => x.id === gameFilter) ? gameFilter : 'all';
+    else animeFilter = animeFilter === 'all' || cats.some(x => x.id === animeFilter) ? animeFilter : 'all';
+    $$('.anime-toolbar [data-category-filter], .game-toolbar [data-category-filter]').forEach(button => {
+      const filter = type === 'game' ? gameFilter : animeFilter;
+      button.classList.toggle('active', (button.dataset.categoryFilter || 'all') === filter);
+    });
   }
 
   function gameCategoryLabel(category) {
     return categoryLabel(category) || 'IN ROTATION';
   }
 
-  const GAME_PAGE_SIZE = 24;
-  const ANIME_PAGE_SIZE = 24;
-  let gameVisibleLimit = GAME_PAGE_SIZE;
-  let animeVisibleLimit = ANIME_PAGE_SIZE;
+  let gameSearchQuery = '';
+  let animeSearchQuery = '';
+  let gameSortMode = 'default';
+  let animeSortMode = 'default';
+  let gameLimit = 36;
+  let animeLimit = 36;
 
-  const archivePools = {
-    game: { cards: [], empty: null, grid: null },
-    anime: { cards: [], empty: null, grid: null }
-  };
-
-  function makeGamePoolCard() {
-    const card = document.createElement('article');
-    card.className = 'card archive-card';
-    card.innerHTML = `<div class="poster-frame"><img class="poster" alt="" loading="lazy"><span class="source-badge"></span></div>
-      <div class="card-body"><div class="category-tags"></div><h3></h3><div class="game-meta"><span></span><span></span></div>
-      <div class="progress-line"><span></span></div><div class="rating-line"><span>LUCIAN RATING</span><strong></strong></div>
-      <p class="card-desc game-achievements" hidden></p><p class="card-desc game-goal" hidden></p>
-      <button class="details-btn" data-details="game" type="button">VIEW DETAILS ↗</button></div>
-      <div class="card-actions"><span></span><span><button class="icon-btn owner-only game-fav" data-fav="game" type="button">♡</button>
-      <button class="icon-btn owner-only game-edit" data-edit="game" type="button">EDIT</button><button class="icon-btn owner-only game-delete" data-del="game" type="button">DELETE</button></span></div>`;
-    const img = card.querySelector('img');
-    img.onerror = () => { card.querySelector('.poster-frame')?.classList.add('broken'); img.removeAttribute('src'); };
-    return card;
-  }
-
-  function makeAnimePoolCard() {
-    const card = document.createElement('article');
-    card.className = 'card anime-card archive-card';
-    card.innerHTML = `<div class="poster-frame anime"><img class="poster" alt="" loading="lazy"><span class="source-badge"></span></div>
-      <div class="card-body"><div class="category-tags"></div><h3></h3><div class="anime-meta"><span></span><span></span></div>
-      <div class="progress-line"><span></span></div><p class="card-desc anime-notes"></p>
-      <button class="details-btn" data-details="anime" type="button">VIEW DETAILS ↗</button></div>
-      <div class="card-actions"><span></span><span><button class="favorite owner-only anime-fav" data-fav="anime" type="button">♡</button>
-      <button class="icon-btn owner-only anime-edit" data-edit="anime" type="button">EDIT</button><button class="icon-btn owner-only anime-delete" data-del="anime" type="button">DELETE</button></span></div>`;
-    const img = card.querySelector('img');
-    img.onerror = () => { card.querySelector('.poster-frame')?.classList.add('broken'); img.removeAttribute('src'); };
-    return card;
-  }
-
-  function ensureArchivePool(type, grid, size) {
-    const pool = archivePools[type];
-    if (pool.grid !== grid) { pool.grid = grid; pool.cards = []; pool.empty = null; grid.replaceChildren(); }
-    if (!pool.empty) {
-      pool.empty = document.createElement('div');
-      pool.empty.className = 'empty';
-      pool.empty.hidden = true;
-      grid.appendChild(pool.empty);
-    }
-    while (pool.cards.length < size) {
-      const card = type === 'game' ? makeGamePoolCard() : makeAnimePoolCard();
-      card.hidden = true;
-      pool.cards.push(card);
-      grid.appendChild(card);
-    }
-    return pool;
-  }
-
-  function paintPool(pool, entries, type) {
-    entries.forEach((entry, slot) => {
-      const item = entry.item;
-      const card = pool.cards[slot];
-      card.hidden = false;
-      card.id = `${type}-${entry.index}`;
-      card.dataset.index = String(entry.index);
-      const img = card.querySelector('img');
-      const poster = String(item.poster || '');
-      if (img.getAttribute('src') !== poster) {
-        card.querySelector('.poster-frame')?.classList.remove('broken');
-        if (poster) img.src = poster; else img.removeAttribute('src');
-      }
-      img.alt = `${item.title || 'Untitled'} poster`;
-
-      const tags = card.querySelector('.category-tags');
-      tags.innerHTML = entry.categories.length
-        ? entry.categories.map(id => `<span class="tag">${esc(categoryLabel(id))}</span>`).join('')
-        : `<span class="tag">${type === 'game' ? 'IN ROTATION' : 'PLANNING'}</span>`;
-      card.querySelector('h3').textContent = item.title || 'Untitled';
-      card.querySelector('.source-badge').textContent = type === 'game' ? (item.source === 'steam' ? 'STEAM' : 'MANUAL') : (item.anilistId ? 'ANILIST' : 'MANUAL');
-
-      if (type === 'game') {
-        const progress = clamp(item.progress, 0, 100);
-        const rating = item.rating === '' || item.rating == null ? '' : Number(item.rating).toFixed(1);
-        const achievements = Array.isArray(item.achievements) ? item.achievements : [];
-        card.querySelector('.game-meta').children[0].textContent = item.rank || 'No rank';
-        card.querySelector('.game-meta').children[1].textContent = `${progress}%`;
-        card.querySelector('.progress-line span').style.width = `${progress}%`;
-        card.querySelector('.rating-line strong').textContent = rating ? `${rating}/10` : 'NOT RATED';
-        const achievementEl = card.querySelector('.game-achievements');
-        achievementEl.hidden = !achievements.length;
-        achievementEl.innerHTML = achievements.length ? `<strong>${achievements.length}</strong> achievement${achievements.length === 1 ? '' : 's'} logged` : '';
-        const goalEl = card.querySelector('.game-goal');
-        goalEl.hidden = !item.goal;
-        goalEl.textContent = item.goal || '';
-        const favorite = entry.catSet.has('favorite');
-        const fav = card.querySelector('.game-fav');
-        fav.textContent = favorite ? '♥' : '♡';
-        fav.classList.toggle('active', favorite);
-        card.querySelector('[data-details]').dataset.i = String(entry.index);
-        card.querySelector('.game-edit').dataset.i = String(entry.index);
-        card.querySelector('.game-delete').dataset.i = String(entry.index);
-        fav.dataset.i = String(entry.index);
-      } else {
-        const pct = item.totalEpisodes ? clamp(Math.round((Number(item.episode || 0) / Number(item.totalEpisodes)) * 100), 0, 100) : 0;
-        card.querySelector('.anime-meta').children[0].textContent = `EP ${item.episode || 0}/${item.totalEpisodes || '?'}`;
-        card.querySelector('.anime-meta').children[1].textContent = item.score !== '' && item.score != null ? `${item.score}/10` : 'NO SCORE';
-        card.querySelector('.progress-line span').style.width = `${pct}%`;
-        card.querySelector('.anime-notes').textContent = item.notes || '';
-        const favorite = Boolean(item.favorite) || entry.catSet.has('favorite');
-        const fav = card.querySelector('.anime-fav');
-        fav.textContent = favorite ? '♥' : '♡';
-        fav.classList.toggle('active', favorite);
-        card.querySelector('[data-details]').dataset.i = String(entry.index);
-        card.querySelector('.anime-edit').dataset.i = String(entry.index);
-        card.querySelector('.anime-delete').dataset.i = String(entry.index);
-        fav.dataset.i = String(entry.index);
-      }
-    });
-    for (let i = entries.length; i < pool.cards.length; i++) pool.cards[i].hidden = true;
-    pool.empty.hidden = entries.length !== 0;
-  }
-
-  function filterArchiveEntries(type) {
-    const source = type === 'game' ? archiveIndex.games : archiveIndex.anime;
-    const filter = type === 'game' ? gameFilter : animeFilter;
-    const q = type === 'game' ? gameSearchQuery : animeSearchQuery;
-    const out = [];
-    for (const entry of source) {
-      if (filter !== 'all' && !entry.catSet.has(filter)) continue;
-      if (q && !entry.hay.includes(q)) continue;
-      out.push(entry);
-    }
+  function sortedList(list, query, sortMode, kind) {
+    const q = String(query || '').trim().toLowerCase();
+    let out = (list || []).filter(item => {
+      if (!q) return true;
+      const extra = kind === 'game' ? [item.title,item.status,item.type,item.rank,item.goal,...(item.details||[]),...(item.categories||[])].join(' ') : [item.title,item.status,item.notes,...(item.categories||[])].join(' ');
+      return extra.toLowerCase().includes(q);
+    }).slice();
+    const text=(v)=>String(v||'').toLowerCase();
+    if (sortMode==='title') out.sort((a,b)=>text(a.title).localeCompare(text(b.title)));
+    if (sortMode==='rating') out.sort((a,b)=>(Number(b.rating)||0)-(Number(a.rating)||0));
+    if (sortMode==='progress') out.sort((a,b)=>(Number(b.progress)||0)-(Number(a.progress)||0));
+    if (sortMode==='recent') out.sort((a,b)=>(Number(b.updatedAt)||0)-(Number(a.updatedAt)||0));
     return out;
   }
 
-  function ensureArchiveCard(type, entry) {
-    const pool = archivePools[type];
-    pool.byIndex ||= new Map();
-    let card = pool.byIndex.get(entry.index);
-    if (card) return card;
-    card = type === 'game' ? makeGamePoolCard() : makeAnimePoolCard();
-    card.hidden = true;
-    pool.grid.appendChild(card);
-    pool.cards.push(card);
-    pool.byIndex.set(entry.index, card);
-    return card;
+  function renderGames() {
+    const el = $('#game-grid'); if (!el) return;
+    renderCategoryFilters('game');
+    const visibleAll = data.games.filter(item => gameFilter === 'all' || itemCategories('game', item).includes(gameFilter));
+    const filtered = sortedList(visibleAll, gameSearchQuery, gameSortMode, 'game');
+    if (!filtered.length) { el.innerHTML = '<div class="empty">Nothing matches this filter.</div>'; updateArchiveCount('game',0,0); return; }
+    const visible = filtered.slice(0, gameLimit);
+    el.innerHTML = visible.map(item => {
+      const i = data.games.indexOf(item);
+      const categories = itemCategories('game', item);
+      const achievements = Array.isArray(item.achievements) ? item.achievements.join(' • ') : String(item.achievements || '');
+      const categoryTags = categories.length ? categories.map(id => `<span class="tag">${esc(gameCategoryLabel(id))}</span>`).join('') : '<span class="tag">IN ROTATION</span>';
+      return `<article class="card archive-card" data-details="game" data-i="${i}">
+        <div class="poster-frame"><img class="poster" src="${esc(item.poster || '')}" alt="${esc(item.title || '')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"></div>
+        <div class="card-body"><div class="category-tags">${categoryTags}</div><h3>${esc(item.title)}</h3><div class="game-meta"><span>${esc(item.rank || 'No rank')}</span><span>${Number(item.rating)||0 ? Number(item.rating).toFixed(1)+'/10' : 'UNRATED'}</span><span>${clamp(item.progress,0,100)}%</span></div><div class="progress-line"><span style="width:${clamp(item.progress,0,100)}%"></span></div>${item.goal?`<p class="card-desc" style="margin-top:12px">${esc(item.goal)}</p>`:''}${achievements?`<p class="card-desc game-achievements" style="margin-top:10px"><strong>ACHIEVEMENTS:</strong> ${esc(achievements)}</p>`:''}</div>
+        <div class="card-actions"><span class="muted-note">CLICK CARD FOR DETAILS</span><span><button class="icon-btn owner-only" data-edit="game" data-i="${i}" type="button">EDIT</button><button class="icon-btn owner-only" data-del="game" data-i="${i}" type="button">DELETE</button></span></div>
+      </article>`;
+    }).join('');
+    if (filtered.length > visible.length) el.insertAdjacentHTML('beforeend', `<button class="load-more btn ghost" id="game-load-more" type="button">LOAD ${Math.min(36,filtered.length-visible.length)} MORE · ${filtered.length-visible.length} REMAINING</button>`);
+    updateArchiveCount('game', visible.length, filtered.length);
   }
 
-  function paintCard(card, entry, type) {
-    const item = entry.item;
-    card.id = `${type}-${entry.index}`;
-    card.dataset.index = String(entry.index);
-    const img = card.querySelector('img');
-    const poster = String(item.poster || '');
-    if (img.getAttribute('src') !== poster) {
-      card.querySelector('.poster-frame')?.classList.remove('broken');
-      if (poster) img.src = poster; else img.removeAttribute('src');
-    }
-    img.alt = `${item.title || 'Untitled'} poster`;
-    const tags = card.querySelector('.category-tags');
-    const categoryHtml = entry.categories.length ? entry.categories.map(id => `<span class="tag">${esc(categoryLabel(id))}</span>`).join('') : `<span class="tag">${type === 'game' ? 'IN ROTATION' : 'PLANNING'}</span>`;
-    if (tags.dataset.html !== categoryHtml) { tags.innerHTML = categoryHtml; tags.dataset.html = categoryHtml; }
-    card.querySelector('h3').textContent = item.title || 'Untitled';
-    card.querySelector('.source-badge').textContent = type === 'game' ? (item.source === 'steam' ? 'STEAM' : 'MANUAL') : (item.anilistId ? 'ANILIST' : 'MANUAL');
-    if (type === 'game') {
-      const progress = clamp(item.progress, 0, 100);
-      const rating = item.rating === '' || item.rating == null ? '' : Number(item.rating).toFixed(1);
-      const achievements = Array.isArray(item.achievements) ? item.achievements : [];
-      card.querySelector('.game-meta').children[0].textContent = item.rank || 'No rank';
-      card.querySelector('.game-meta').children[1].textContent = `${progress}%`;
-      card.querySelector('.progress-line span').style.width = `${progress}%`;
-      card.querySelector('.rating-line strong').textContent = rating ? `${rating}/10` : 'NOT RATED';
-      const achievementEl = card.querySelector('.game-achievements');
-      achievementEl.hidden = !achievements.length;
-      achievementEl.innerHTML = achievements.length ? `<strong>${achievements.length}</strong> achievement${achievements.length === 1 ? '' : 's'} logged` : '';
-      const goalEl = card.querySelector('.game-goal');
-      goalEl.hidden = !item.goal;
-      goalEl.textContent = item.goal || '';
-      const fav = card.querySelector('.game-fav');
-      fav.textContent = entry.catSet.has('favorite') ? '♥' : '♡';
-      fav.classList.toggle('active', entry.catSet.has('favorite'));
-      card.querySelector('[data-details]').dataset.i = String(entry.index);
-      card.querySelector('.game-edit').dataset.i = String(entry.index);
-      card.querySelector('.game-delete').dataset.i = String(entry.index);
-      fav.dataset.i = String(entry.index);
-    } else {
-      const pct = item.totalEpisodes ? clamp(Math.round((Number(item.episode || 0) / Number(item.totalEpisodes)) * 100), 0, 100) : 0;
-      card.querySelector('.anime-meta').children[0].textContent = `EP ${item.episode || 0}/${item.totalEpisodes || '?'}`;
-      card.querySelector('.anime-meta').children[1].textContent = item.score !== '' && item.score != null ? `${item.score}/10` : 'NO SCORE';
-      card.querySelector('.progress-line span').style.width = `${pct}%`;
-      card.querySelector('.anime-notes').textContent = item.notes || '';
-      const favorite = Boolean(item.favorite) || entry.catSet.has('favorite');
-      const fav = card.querySelector('.anime-fav');
-      fav.textContent = favorite ? '♥' : '♡';
-      fav.classList.toggle('active', favorite);
-      card.querySelector('[data-details]').dataset.i = String(entry.index);
-      card.querySelector('.anime-edit').dataset.i = String(entry.index);
-      card.querySelector('.anime-delete').dataset.i = String(entry.index);
-      fav.dataset.i = String(entry.index);
-    }
+  function updateArchiveCount(kind, shown, total) {
+    const el = $(`#${kind}-result-count`); if (el) el.textContent = total ? `${shown}/${total}` : '0';
   }
 
-  function fastPaintArchive(type, entries, emptyText) {
-    const el = type === 'game' ? $('#game-grid') : $('#anime-grid');
-    if (!el) return;
-    const pool = archivePools[type];
-    if (pool.grid !== el) { pool.grid = el; pool.cards = []; pool.byIndex = new Map(); pool.empty = null; el.replaceChildren(); }
-    if (!pool.empty) { pool.empty = document.createElement('div'); pool.empty.className = 'empty'; pool.empty.hidden = true; el.appendChild(pool.empty); }
-    const visible = entries.slice(0, type === 'game' ? gameVisibleLimit : animeVisibleLimit);
-    const keep = new Set(visible.map(entry => entry.index));
-    for (const entry of visible) {
-      const card = ensureArchiveCard(type, entry);
-      paintCard(card, entry, type);
-      card.hidden = false;
-    }
-    for (const [idx, card] of pool.byIndex) if (!keep.has(idx)) card.hidden = true;
-    pool.empty.textContent = emptyText;
-    pool.empty.hidden = visible.length !== 0;
+
+  function normalizeAnimeStatus(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    const map = { watching: 'Watching', completed: 'Completed', planning: 'Planning', paused: 'Paused', dropped: 'Dropped', favorite: 'Favorite', favourites: 'Favorite', favorites: 'Favorite' };
+    return map[raw] || String(value || 'Planning').trim() || 'Planning';
   }
 
-  function renderGames(refreshToolbar = false) {
-    const el = $('#game-grid');
-    if (!el) return;
-    if (refreshToolbar) renderCategoryFilters('game');
-    const filtered = filterArchiveEntries('game');
-    const count = $('#game-count-label');
-    if (count) count.textContent = `${filtered.length} / ${data.games.length} GAMES`;
-    fastPaintArchive('game', filtered, data.games.length ? 'Nothing matches this game view.' : 'No games yet. Use ADD GAME or STEAM SEARCH to create one.');
-    updateLoadMore('game', filtered.length > gameVisibleLimit);
+  function renderAnime() {
+    const el = $('#anime-grid'); if (!el) return;
+    renderCategoryFilters('anime');
+    const visibleAll = data.anime.filter(item => animeFilter === 'all' || itemCategories('anime', item).includes(animeFilter));
+    const filtered = sortedList(visibleAll, animeSearchQuery, animeSortMode, 'anime');
+    if (!filtered.length) { el.innerHTML = '<div class="empty">Nothing matches this filter.</div>'; updateArchiveCount('anime',0,0); return; }
+    const visible = filtered.slice(0, animeLimit);
+    el.innerHTML = visible.map(item => {
+      const i=data.anime.indexOf(item); const pct=item.totalEpisodes?clamp(Math.round((item.episode||0)/item.totalEpisodes*100),0,100):0; const cats=itemCategories('anime',item); const tags=cats.length?cats.map(id=>`<span class="tag">${esc(categoryLabel(id))}</span>`).join(''):'<span class="tag">PLANNING</span>';
+      return `<article class="card anime-card archive-card" data-details="anime" data-i="${i}"><div class="poster-frame anime"><img class="poster" src="${esc(item.poster||'')}" alt="${esc(item.title||'')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"></div><div class="card-body"><div class="category-tags">${tags}</div><h3>${esc(item.title)}</h3><div class="anime-meta"><span>EP ${item.episode||0}/${item.totalEpisodes||'?'}</span><span>${item.score?esc(item.score)+'/10':'UNRATED'}</span></div><div class="progress-line"><span style="width:${pct}%"></span></div><p class="card-desc" style="margin-top:10px">${esc(item.notes||'')}</p></div><div class="card-actions"><button class="favorite owner-only ${item.favorite?'active':''}" data-fav="anime" data-i="${i}" type="button" aria-label="Toggle favorite">${item.favorite?'♥':'♡'}</button><span><button class="icon-btn owner-only" data-edit="anime" data-i="${i}" type="button">EDIT</button><button class="icon-btn owner-only" data-del="anime" data-i="${i}" type="button">DELETE</button></span></div></article>`;
+    }).join('');
+    if (filtered.length > visible.length) el.insertAdjacentHTML('beforeend', `<button class="load-more btn ghost" id="anime-load-more" type="button">LOAD ${Math.min(36,filtered.length-visible.length)} MORE · ${filtered.length-visible.length} REMAINING</button>`);
+    updateArchiveCount('anime',visible.length,filtered.length);
   }
 
-  function renderAnime(refreshToolbar = false) {
-    const el = $('#anime-grid');
-    if (!el) return;
-    if (refreshToolbar) renderCategoryFilters('anime');
-    const filtered = filterArchiveEntries('anime');
-    const count = $('#anime-count-label');
-    if (count) count.textContent = `${filtered.length} / ${data.anime.length} ANIME`;
-    fastPaintArchive('anime', filtered, data.anime.length ? 'Nothing matches this anime view.' : 'No anime yet. Use ANILIST SEARCH or ADD MANUALLY to create one.');
-    updateLoadMore('anime', filtered.length > animeVisibleLimit);
-  }
 
   const ICON_SLUGS = {
     github: 'github', git: 'github', youtube: 'youtube', instagram: 'instagram',
@@ -878,55 +453,33 @@
     if (!el) return;
     if (!data.links.length) { el.innerHTML = '<div class="empty">No connections yet. Use ADD CONNECTION to create one.</div>'; return; }
     el.innerHTML = data.links.map((item, i) => `
-      <article class="card link-card" id="link-${i}" data-href="${esc(safeUrl(item.url))}" role="link" tabindex="0" aria-label="Open ${esc(item.name)}">
+      <article class="card link-card" data-href="${esc(safeUrl(item.url))}" role="link" tabindex="0" aria-label="Open ${esc(item.name)}">
         <a class="link-card-main" href="${esc(safeUrl(item.url))}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(item.name)}">
           <div class="link-icon">${iconMarkup(item)}</div>
           <div style="flex:1"><strong>${esc(item.name)}</strong><p>${esc(item.role || '')}</p></div>
-          <span class="link-open-arrow">↗</span>
         </a>
         <div class="link-card-actions"><button class="icon-btn owner-only" data-edit="link" data-i="${i}" type="button">EDIT</button> <button class="icon-btn owner-only" data-del="link" data-i="${i}" type="button">DELETE</button></div>
       </article>`).join('');
   }
 
-  function updateLoadMore(type, show) {
-    const id = type === 'game' ? 'game-load-more' : 'anime-load-more';
-    const btn = document.getElementById(id);
-    if (btn) btn.hidden = !show;
-  }
 
   function renderHomeDashboard() {
-    const set = (id, value, html=false) => { const el=$(id); if (!el) return; html ? el.innerHTML=value : el.textContent=value; };
-    set('#home-games-count', data.games.length); set('#home-anime-count', data.anime.length); set('#home-skills-count', data.skills.length);
-    const currentGames = data.games.filter(g => itemCategories('game', g).includes('rotation')).slice(0,3);
-    const currentAnime = data.anime.filter(a => itemCategories('anime', a).includes('watching')).slice(0,3);
-    const renderMini = (items, type) => items.length ? items.map((item) => `<article class="mini-archive"><div class="mini-cover"><img src="${esc(item.poster || '')}" alt="" loading="lazy"></div><div><strong>${esc(item.title)}</strong><small>${type==='game' ? `${clamp(item.progress,0,100)}% progress` : `EP ${item.episode||0}/${item.totalEpisodes||'?'}`}</small></div></article>`).join('') : '<div class="empty">Nothing here yet.</div>';
-    set('#home-current-games', renderMini(currentGames,'game'), true); set('#home-current-anime', renderMini(currentAnime,'anime'), true);
-    const updates=[];
-    data.games.forEach((item,i)=>{if(item.updatedAt) updates.push({type:'GAME',title:item.title,time:item.updatedAt,index:i,page:'gaming.html'});});
-    data.anime.forEach((item,i)=>{if(item.updatedAt) updates.push({type:'ANIME',title:item.title,time:item.updatedAt,index:i,page:'anime.html'});});
-    data.skills.forEach((item,i)=>{if(item.updatedAt) updates.push({type:'SKILL',title:item.name,time:item.updatedAt,index:i,page:'skills.html'});});
-    const list=updates.sort((a,b)=>new Date(b.time)-new Date(a.time)).slice(0,8);
-    set('#recent-updates', list.length ? list.map(u=>`<button class="update-row" data-deeplink="${u.page}#${u.type.toLowerCase()}-${u.index}" type="button"><span>${esc(u.type)}</span><strong>${esc(u.title)}</strong><small>${formatRelative(u.time)}</small></button>`).join('') : '<div class="empty">Your update history will appear here as you edit the archive.</div>', true);
+    if (!$('#home-stats')) return;
+    const stats = { games:data.games.length, anime:data.anime.length, skills:data.skills.length, links:data.links.length };
+    ['games','anime','skills','links'].forEach(k => { const el=$(`#home-stat-${k}`); if(el) el.textContent=stats[k]; });
+    const playing = data.games.find(g => /playing|active|rotation/i.test(String(g.status||''))) || data.games.find(g => itemCategories('game',g).includes('rotation'));
+    const watching = data.anime.find(a => itemCategories('anime',a).includes('watching')) || data.anime.find(a => /watching/i.test(String(a.status||'')));
+    if ($('#home-playing')) $('#home-playing').innerHTML = playing ? `<strong>${esc(playing.title)}</strong><small>${esc(playing.status || 'IN ROTATION')}</small>` : '<strong>Nothing yet</strong><small>Add a game to your rotation.</small>';
+    if ($('#home-watching')) $('#home-watching').innerHTML = watching ? `<strong>${esc(watching.title)}</strong><small>${esc(watching.status || 'WATCHING')}</small>` : '<strong>Nothing yet</strong><small>Add an anime to your list.</small>';
+    const topGames = [...data.games].sort((a,b)=>(Number(b.rating)||0)-(Number(a.rating)||0)).slice(0,3);
+    const topAnime = [...data.anime].sort((a,b)=>(Number(b.score)||0)-(Number(a.score)||0)).slice(0,3);
+    if ($('#home-top-games')) $('#home-top-games').innerHTML = topGames.length ? topGames.map((g,i)=>`<button type="button" class="dashboard-item" data-details="game" data-i="${data.games.indexOf(g)}"><span>${i+1}</span><b>${esc(g.title)}</b><small>${Number(g.rating)||0 ? Number(g.rating).toFixed(1)+'/10' : 'UNRATED'}</small></button>`).join('') : '<div class="empty">No games yet.</div>';
+    if ($('#home-top-anime')) $('#home-top-anime').innerHTML = topAnime.length ? topAnime.map((a,i)=>`<button type="button" class="dashboard-item" data-details="anime" data-i="${data.anime.indexOf(a)}"><span>${i+1}</span><b>${esc(a.title)}</b><small>${a.score ? esc(a.score)+'/10' : 'UNRATED'}</small></button>`).join('') : '<div class="empty">No anime yet.</div>';
+    const log = Array.isArray(data.recentUpdates) ? data.recentUpdates.slice(0,6) : [];
+    if ($('#recent-updates')) $('#recent-updates').innerHTML = log.length ? log.map(x=>`<div class="update-row"><span>${esc(x.type||'UPDATE')}</span><b>${esc(x.text||'Updated archive')}</b><small>${esc(x.time||'')}</small></div>`).join('') : '<div class="empty">Your archive history will appear here.</div>';
   }
 
-  function formatRelative(value) {
-    const diff=Math.max(0,Date.now()-new Date(value).getTime()); const mins=Math.floor(diff/60000); if(mins<1) return 'JUST NOW'; if(mins<60) return `${mins}M AGO`; const hrs=Math.floor(mins/60); if(hrs<24) return `${hrs}H AGO`; const days=Math.floor(hrs/24); return `${days}D AGO`;
-  }
-
-  function renderCurrentPage() {
-    if (renderedIndexVersion !== archiveIndexVersion) { buildArchiveIndex(); renderedIndexVersion = archiveIndexVersion; }
-    if (PAGE === 'home') { renderProfile(); renderHomeDashboard(); }
-    else if (PAGE === 'about') renderProfile();
-    else if (PAGE === 'skills') renderSkills();
-    else if (PAGE === 'gaming') renderGames(true);
-    else if (PAGE === 'anime') renderAnime(true);
-    else if (PAGE === 'network') renderLinks();
-    if ($('#discord-card')) renderDiscordProfile();
-    applyLiveWallpaper();
-    applyOwnerVisibility();
-  }
-
-  function renderAll() { if (renderedIndexVersion !== archiveIndexVersion) { buildArchiveIndex(); renderedIndexVersion = archiveIndexVersion; } renderProfile(); renderDiscordProfile(); renderSkills(); renderGames(true); renderAnime(true); renderLinks(); if(PAGE==='home') renderHomeDashboard(); setupReveal(); applyLiveWallpaper(); applyOwnerVisibility(); }
+  function renderAll() { renderProfile(); if ($('#discord-card')) renderDiscordProfile(); if ($('#skills-grid')) renderSkills(); if ($('#game-grid')) { renderGames(); renderCategoryFilters('game'); } if ($('#anime-grid')) { renderAnime(); renderCategoryFilters('anime'); } if ($('#links-grid')) renderLinks(); renderHomeDashboard(); setupReveal(); applyLiveWallpaper(); applyOwnerVisibility(); }
 
   function getItem(type, index) { return index >= 0 ? getArray(type)[index] : {}; }
 
@@ -991,84 +544,78 @@
 
   function makeGameFromSteam(game) {
     const appid = game.steam_appid || game.appid || game.id || '';
-    const genres = Array.isArray(game.genres) ? game.genres.map(x => x.description || x).filter(Boolean).slice(0,3).join(' • ') : '';
     return {
-      title: game.name || 'STEAM GAME', status: 'NOT STARTED', type: genres || 'Steam',
+      title: game.name || 'STEAM GAME',
+      status: 'NOT STARTED',
+      type: Array.isArray(game.genres) && game.genres.length ? game.genres.slice(0, 3).map(x => x.description).join(' • ') : 'Steam',
       poster: game.header_image || game.large_capsule_image || game.tiny_image || (appid ? `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg` : ''),
-      rank: 'Not played', progress: 0, category: 'want', categories: ['want'], rating: '', goal: (game.short_description || 'Start the game.').replace(/<[^>]*>/g,''),
-      achievements: [], steamAppId: appid, steamUrl: appid ? `https://store.steampowered.com/app/${appid}/` : '', source: 'steam', steamPrice: game.price?.final_formatted || '', updatedAt: new Date().toISOString()
+      rank: 'Not played',
+      progress: 0,
+      category: 'want',
+      categories: ['want'],
+      rating: 0,
+      goal: game.short_description ? String(game.short_description).replace(/<[^>]*>/g, '') : 'Start the game.',
+      achievements: [],
+      steamAppId: appid,
+      steamUrl: appid ? `https://store.steampowered.com/app/${appid}/` : ''
     };
   }
 
   async function steamSearch() {
     if (!ownerMode) return showToast('Owner mode is locked');
-    openModal(`<p class="eyebrow">GAME DATABASE // IMPORT</p><h2 id="modal-title">Search Games</h2><p class="muted-note">Fast browser search first, then the server-side Steam provider. Results can be imported directly into your archive.</p><div class="search-row"><input id="steam-q" placeholder="Search a game..." autocomplete="off"><button class="btn primary" id="steam-go" type="button">SEARCH</button></div><div id="steam-results" class="search-results"></div><p class="muted-note">Primary: CheapShark catalog • Secondary: Netlify/Steam • Manual add always available</p>`);
-    const cacheKey = query => String(query || '').trim().toLowerCase();
-    const showManual = queryText => {
-      const box = $('#steam-results');
-      if (!box) return;
-      box.innerHTML = `<div class="empty">No automatic game provider responded.<div class="search-fallback-actions"><a class="btn ghost small" href="https://store.steampowered.com/search/?ignore_preferences=1&term=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><a class="btn ghost small" href="https://www.cheapshark.com/search?search=${encodeURIComponent(queryText)}" target="_blank" rel="noopener noreferrer">OPEN CHEAPSHARK ↗</a><button class="btn ghost small" id="steam-use-manual" type="button">USE MANUAL ADD</button></div></div>`;
-      $('#steam-use-manual')?.addEventListener('click', () => { closeModal(); openManager('game', -1); setTimeout(() => { const title = $('#f-title'); if (title) { title.value = queryText; title.focus(); } }, 30); });
-    };
-    const paintResults = (results, provider) => {
-      const clean = results.filter(item => item?.name && item?.id).slice(0, 20);
-      if (!clean.length) return false;
-      steamSearchCache.clear(); clean.forEach(item => steamSearchCache.set(String(item.id), item));
-      const label = provider === 'cheapshark' ? 'CHEAPSHARK' : 'STEAM';
-      $('#steam-results').innerHTML = clean.map(item => `<div class="search-result"><img src="${esc(item.tiny_image || item.thumb || item.header_image || '')}" alt="" loading="lazy"><div><strong>${esc(item.name)}</strong><small>${label} • App ID ${esc(item.id)}</small></div><button class="btn primary small" data-add-steam="${esc(item.id)}" type="button">IMPORT</button></div>`).join('');
-      return true;
-    };
+    openModal(`<p class="eyebrow">GAME DATA // SEARCH PROVIDER</p><h2 id="modal-title">Search Steam Games</h2><p class="muted-note">Fast catalog search uses a public game catalog that includes Steam IDs and artwork. Imported entries keep their Steam link. Games outside the catalog can still be added manually.</p><div class="search-row"><input id="steam-q" placeholder="Search game..." autocomplete="off"><button class="btn primary" id="steam-go" type="button">SEARCH</button></div><div id="steam-results" class="search-results"></div>`);
     const run = async () => {
-      const queryText = $('#steam-q')?.value.trim() || '';
-      if (!queryText) return showToast('Type a game name');
-      const resultsBox = $('#steam-results');
-      resultsBox.innerHTML = '<div class="empty">SEARCHING GAME DATABASE…</div>';
-      const key = cacheKey(queryText);
-      if (steamSearchCache.has(`q:${key}`)) {
-        paintResults(steamSearchCache.get(`q:${key}`), 'cheapshark');
-        return;
+      const q = $('#steam-q')?.value.trim();
+      const target = $('#steam-results');
+      if (!q || !target) return showToast('Type a game name');
+      target.innerHTML = '<div class="empty">SEARCHING GAME CATALOG...</div>';
+      try {
+        const response = await fetch(`https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(q)}&limit=10`, { headers:{'Accept':'application/json'}, cache:'force-cache' });
+        if (!response.ok) throw new Error(`Catalog HTTP ${response.status}`);
+        const items = await response.json();
+        const results = Array.isArray(items) ? items.filter(x => x && x.external).slice(0,10) : [];
+        steamSearchCache.clear();
+        results.forEach(item => steamSearchCache.set(String(item.steamAppID || `cs-${item.gameID}`), {
+          id: item.steamAppID || item.gameID,
+          name: item.external,
+          tiny_image: item.thumb || '',
+          large_capsule_image: item.thumb || '',
+          steam_appid: item.steamAppID || '',
+          steam_rating: item.steamRatingPercent || '',
+          rating_text: item.steamRatingText || '',
+          metacriticScore: item.metacriticScore || '',
+          gameID: item.gameID,
+          steamAppId: item.steamAppID || ''
+        }));
+        if (!results.length) { target.innerHTML = `<div class="empty">NO CATALOG RESULTS.<br><br><a href="https://store.steampowered.com/search/?term=${encodeURIComponent(q)}" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><br><a href="https://steamdb.info/search/?a=app&q=${encodeURIComponent(q)}" target="_blank" rel="noopener noreferrer">SEARCH STEAMDB ↗</a></div>`; return; }
+        target.innerHTML = results.map(item => {
+          const key = item.steamAppID || item.gameID;
+          const existing = data.games.some(g => String(g.steamAppId||'')===String(item.steamAppID||'') || String(g.title||'').toLowerCase()===String(item.external||'').toLowerCase());
+          return `<div class="search-result"><img src="${esc(item.thumb||'')}" alt="" loading="lazy"><div><strong>${esc(item.external)}</strong><small>${item.steamAppID ? `Steam App ${esc(item.steamAppID)}` : 'Steam catalog entry'}${item.steamRatingPercent ? ` • ${esc(item.steamRatingPercent)}% positive` : ''}</small></div><button class="btn primary small" data-add-steam="${esc(key)}" type="button" ${existing?'disabled':''}>${existing?'ADDED':'IMPORT'}</button></div>`;
+        }).join('');
+      } catch (error) {
+        console.error(error);
+        target.innerHTML = `<div class="empty">GAME CATALOG COULD NOT BE REACHED.<br><br><a href="https://store.steampowered.com/search/?term=${encodeURIComponent(q)}" target="_blank" rel="noopener noreferrer">OPEN STEAM SEARCH ↗</a><br><a href="https://steamdb.info/search/?a=app&q=${encodeURIComponent(q)}" target="_blank" rel="noopener noreferrer">SEARCH STEAMDB ↗</a></div>`;
       }
-      // 1) CheapShark browser API: no Netlify required, and Steam App IDs are returned when available.
-      try {
-        const response = await fetch(`https://www.cheapshark.com/api/1.0/games?title=${encodeURIComponent(queryText)}&limit=20`, { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
-        if (response.ok) {
-          const json = await response.json();
-          const results = (Array.isArray(json) ? json : []).map(x => ({
-            id: Number(x.steamAppID || 0), appid: Number(x.steamAppID || 0), steam_appid: Number(x.steamAppID || 0), name: x.external,
-            tiny_image: x.thumb || '', header_image: x.steamAppID ? `https://cdn.akamai.steamstatic.com/steam/apps/${x.steamAppID}/header.jpg` : (x.thumb || ''),
-            sourceProvider: 'CheapShark'
-          })).filter(x => x.id && x.name);
-          if (paintResults(results, 'cheapshark')) { steamSearchCache.set(`q:${key}`, results); return; }
-        }
-      } catch (_) {}
-      // 2) Existing Netlify Steam function when the project is opened on Netlify.
-      try {
-        const response = await fetch(`/.netlify/functions/steam-search?term=${encodeURIComponent(queryText)}`, { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
-        if (response.ok) {
-          const json = await response.json();
-          const results = Array.isArray(json?.items) ? json.items : [];
-          if (paintResults(results, 'steam')) { steamSearchCache.set(`q:${key}`, results); return; }
-        }
-      } catch (_) {}
-      showManual(queryText);
     };
     $('#steam-go')?.addEventListener('click', run);
-    $('#steam-q')?.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
-    setTimeout(() => $('#steam-q')?.focus(), 30);
+    $('#steam-q')?.addEventListener('keydown', event => { if (event.key === 'Enter') run(); });
+    setTimeout(() => $('#steam-q')?.focus(), 0);
   }
+
 
   async function addFromSteam(appid) {
     if (!ownerMode) return showToast('Owner mode is locked');
     const cached = steamSearchCache.get(String(appid));
-    if (!cached) return showToast('Search result expired — search again');
-    if (data.games.some(g => String(g.steamAppId || '') === String(appid))) { closeModal(); return showToast('That game is already in your archive'); }
+    if (!cached) return showToast('Steam result expired — search again');
     const imported = makeGameFromSteam(cached);
-    data.games.push(imported);
-    buildArchiveIndex();
-    renderCurrentPage();
-    persist(`${imported.title} added`);
-    closeModal();
-    if (PAGE !== 'gaming') location.href = pageUrl('gaming');
+    try {
+      // Import immediately from the Steam search result so a second API request is not required.
+      data.games.push(imported);
+      await persist('Steam game added');
+      closeModal();
+      location.hash = '#gaming';
+    } catch (error) { showToast('Could not import that Steam game'); console.error(error); }
   }
 
   function openManager(type, index = -1) {
@@ -1117,12 +664,12 @@
         <div class="form-field"><label>TYPE</label><input id="f-type" value="${esc(item.type)}" placeholder="Competitive"></div>
         <div class="form-field"><label>RANK</label><input id="f-rank" value="${esc(item.rank)}" placeholder="Silver 2"></div>
         <div class="form-field"><label>PROGRESS %</label><input id="f-progress" type="number" min="0" max="100" value="${item.progress ?? 0}"></div>
-        <div class="form-field"><label>LUCIAN RATING /10</label><input id="f-rating" type="number" min="0" max="10" step="0.5" value="${item.rating ?? ''}"></div>
+        <div class="form-field"><label>LUCIAN RATING / 10</label><input id="f-rating" type="number" min="0" max="10" step="0.5" value="${item.rating ?? 0}"></div>
       </div>
       ${categoryPickerHTML('game', item)}
       ${posterFields(item)}
       <div class="form-field"><label>GOAL / NOTE</label><textarea id="f-goal">${esc(item.goal || '')}</textarea></div>
-      <div class="form-field"><label>ACHIEVEMENTS / MILESTONES</label><textarea id="f-achievements" placeholder="Finished story • Reached Elite rank • Unlocked secret ending">${esc(Array.isArray(item.achievements) ? item.achievements.join(' • ') : (item.achievements || ''))}</textarea><p class="muted-note">Separate multiple achievements with •</p></div>
+      <div class="form-field"><label>ACHIEVEMENTS</label><textarea id="f-achievements" placeholder="Examples: Finished story • Unlocked all agents • Reached Elite rank">${esc(Array.isArray(item.achievements) ? item.achievements.join(' • ') : (item.achievements || ''))}</textarea><p class="muted-note">Separate multiple achievements with •</p></div>
       <button class="btn primary form-submit" data-save-manager="game" data-index="${index}" type="button">SAVE GAME</button>`;
 
     if (type === 'link') html = `
@@ -1206,7 +753,7 @@
       const profile = data.profile || (data.profile = {});
       profile.name = $('#f-profile-name').value.trim() || 'Lucian Vex';
       profile.bio = $('#f-profile-bio').value.trim();
-      profile.chips = $('#f-profile-chips').value.split('•').map(v => v.trim().toUpperCase()).filter(Boolean).slice(0, 8); profile.updatedAt = new Date().toISOString();
+      profile.chips = $('#f-profile-chips').value.split('•').map(v => v.trim().toUpperCase()).filter(Boolean).slice(0, 8);
       persist('About Me saved');
       closeModal();
       return;
@@ -1217,26 +764,26 @@
       profile.contact.title = $('#f-contact-title').value.trim() || 'Contact';
       profile.contact.text = $('#f-contact-text').value.trim() || 'Open to conversations, collaborations, games, projects, or just a good conversation.';
       profile.discord = $('#f-contact-discord').value.trim();
-      profile.email = $('#f-contact-email').value.trim(); profile.updatedAt = new Date().toISOString();
+      profile.email = $('#f-contact-email').value.trim();
       persist('Contact info saved');
       closeModal();
       return;
     }
     if (type === 'skill') {
-      item.name = $('#f-name').value.trim(); item.level = clamp($('#f-level').value,0,100); item.desc = $('#f-desc').value.trim(); item.updatedAt = new Date().toISOString();
+      item.name = $('#f-name').value.trim(); item.level = clamp($('#f-level').value,0,100); item.desc = $('#f-desc').value.trim();
       if (!item.name) return showToast('Enter a skill name');
     }
     if (type === 'game') {
-      item.title = $('#f-title').value.trim(); item.status = $('#f-status').value.trim(); item.type = $('#f-type').value.trim(); item.rank = $('#f-rank').value.trim(); item.progress = clamp($('#f-progress').value,0,100); item.rating = $('#f-rating')?.value === '' ? '' : clamp($('#f-rating')?.value,0,10); item.categories = selectedCategories(); if (!item.categories.length) item.categories = ['rotation']; item.category = item.categories[0]; item.goal = $('#f-goal').value.trim(); item.achievements = $('#f-achievements').value.split('•').map(v => v.trim()).filter(Boolean).slice(0, 30); item.source = item.source || 'manual'; item.updatedAt = new Date().toISOString();
+      item.title = $('#f-title').value.trim(); item.status = $('#f-status').value.trim(); item.type = $('#f-type').value.trim(); item.rank = $('#f-rank').value.trim(); item.progress = clamp($('#f-progress').value,0,100); item.rating = clamp($('#f-rating')?.value || item.rating || 0,0,10); item.categories = selectedCategories(); if (!item.categories.length) item.categories = ['rotation']; item.category = item.categories[0]; item.goal = $('#f-goal').value.trim(); item.achievements = $('#f-achievements').value.split('•').map(v => v.trim()).filter(Boolean).slice(0, 30);
       if (currentPosterData) item.poster = currentPosterData; else item.poster = safeUrl($('#f-poster').value);
       if (!item.title) return showToast('Enter a game title');
     }
     if (type === 'link') {
-      item.name = $('#f-name').value.trim(); const platform = $('#f-platform').value; item.icon = platform || $('#f-icon').value.trim(); item.role = $('#f-role').value.trim(); item.url = safeUrl($('#f-url').value); item.updatedAt = new Date().toISOString();
+      item.name = $('#f-name').value.trim(); const platform = $('#f-platform').value; item.icon = platform || $('#f-icon').value.trim(); item.role = $('#f-role').value.trim(); item.url = safeUrl($('#f-url').value);
       if (!item.name || !item.url) return showToast('Enter name and URL');
     }
     if (type === 'anime') {
-      item.title = $('#f-title').value.trim(); item.updatedAt = new Date().toISOString(); const chosenCategories = selectedCategories().filter(id => !['watching','completed','planning','paused','dropped'].includes(id)); const statusCategory = String($('#f-status').value || 'Planning').trim().toLowerCase(); const normalizedStatus = ['watching','completed','planning','paused','dropped'].includes(statusCategory) ? statusCategory : 'planning'; item.categories = [normalizedStatus, ...chosenCategories.filter(id => id !== normalizedStatus)]; if ($('#f-favorite').checked && !item.categories.includes('favorite')) item.categories.push('favorite'); item.status = normalizedStatus.charAt(0).toUpperCase() + normalizedStatus.slice(1); item.episode = Math.max(0, Number($('#f-episode').value)||0); item.totalEpisodes = Math.max(0, Number($('#f-total').value)||0); item.score = $('#f-score').value === '' ? '' : clamp($('#f-score').value,0,10); item.anilistId = $('#f-anilist').value.trim(); item.favorite = item.categories.includes('favorite'); item.notes = $('#f-notes').value.trim();
+      item.title = $('#f-title').value.trim(); const chosenCategories = selectedCategories().filter(id => !['watching','completed','planning','paused','dropped'].includes(id)); const statusCategory = String($('#f-status').value || 'Planning').trim().toLowerCase(); const normalizedStatus = ['watching','completed','planning','paused','dropped'].includes(statusCategory) ? statusCategory : 'planning'; item.categories = [normalizedStatus, ...chosenCategories.filter(id => id !== normalizedStatus)]; if ($('#f-favorite').checked && !item.categories.includes('favorite')) item.categories.push('favorite'); item.status = normalizedStatus.charAt(0).toUpperCase() + normalizedStatus.slice(1); item.episode = Math.max(0, Number($('#f-episode').value)||0); item.totalEpisodes = Math.max(0, Number($('#f-total').value)||0); item.score = $('#f-score').value === '' ? '' : clamp($('#f-score').value,0,10); item.anilistId = $('#f-anilist').value.trim(); item.favorite = item.categories.includes('favorite'); item.notes = $('#f-notes').value.trim();
       if (currentPosterData) item.poster = currentPosterData; else item.poster = safeUrl($('#f-poster').value);
       if (!item.title) return showToast('Enter an anime title');
     }
@@ -1272,10 +819,10 @@
       const json = await response.json();
       const item = json.data?.Media;
       if (!item) throw new Error('Anime not found');
-      data.anime.push({ title:item.title.english || item.title.romaji, status:'Planning', categories:['planning'], episode:0, totalEpisodes:item.episodes || 0, score:'', favorite:false, notes:'', anilistId:item.id, poster:item.coverImage?.large || '', updatedAt:new Date().toISOString() });
+      data.anime.push({ title:item.title.english || item.title.romaji, status:'Planning', categories:['planning'], episode:0, totalEpisodes:item.episodes || 0, score:'', favorite:false, notes:'', anilistId:item.id, poster:item.coverImage?.large || '' });
       persist('Anime added');
       closeModal();
-      location.href = pageUrl('anime','#anime');
+      location.hash = '#anime';
     } catch (error) { showToast('Could not add anime'); console.error(error); }
   }
 
@@ -1480,7 +1027,6 @@
   };
 
   function wallpaperSettings() {
-    if (!data.profile.liveWallpaper && data.profile.discordProfile?.liveWallpaper) data.profile.liveWallpaper = clone(data.profile.discordProfile.liveWallpaper);
     data.profile.liveWallpaper ||= { mode: 'cyberflow', imageUrl: '', videoUrl: '', opacity: 0.32, blur: 0, tint: 0.14 };
     const w = data.profile.liveWallpaper;
     w.mode ||= 'cyberflow'; w.imageUrl ||= ''; w.videoUrl ||= '';
@@ -1514,16 +1060,27 @@
   }
 
   function applyLiveWallpaper() {
-    const layer = $('#live-wallpaper-layer'); const video = $('#live-wallpaper-video'); if (!layer) return;
+    const layer = $('#live-wallpaper-layer');
+    const video = $('#live-wallpaper-video');
+    if (!layer) return;
     const w = wallpaperSettings();
-    layer.dataset.mode=w.mode; layer.style.setProperty('--wallpaper-opacity',String(w.opacity)); layer.style.setProperty('--wallpaper-blur',`${w.blur}px`); layer.style.setProperty('--wallpaper-tint',String(w.tint));
-    const image=String(w.imageUrl||'').trim(); layer.style.backgroundImage=image ? `url("${image.replace(/"/g,'\"')}")` : '';
-    layer.classList.toggle('has-custom-image',!!image); layer.classList.toggle('disabled',w.mode==='none'); layer.setAttribute('aria-hidden','true');
-    if(video){
-      const src=String(w.videoUrl||'').trim(); const useVideo=!!src && w.mode==='video';
-      if(useVideo){ if(video.dataset.loadedSrc!==src){video.dataset.loadedSrc=src; video.src=src; video.load();} video.style.display='block'; const playPromise=video.play(); if(playPromise?.catch) playPromise.catch(()=>{}); }
-      else { video.pause(); video.removeAttribute('src'); video.removeAttribute('data-loaded-src'); video.style.display='none'; }
+    layer.dataset.mode = w.mode;
+    layer.style.setProperty('--wallpaper-opacity', String(w.opacity));
+    layer.style.setProperty('--wallpaper-blur', `${w.blur}px`);
+    layer.style.setProperty('--wallpaper-tint', String(w.tint));
+    layer.style.backgroundImage = w.imageUrl ? `url("${String(w.imageUrl).replace(/"/g, '\\"')}")` : '';
+    layer.classList.toggle('has-custom-image', !!w.imageUrl);
+    if (video) {
+      const src = safeUrl(w.videoUrl);
+      const useVideo = !!src && w.mode === 'video';
+      if (useVideo) {
+        if (video.src !== src) { video.src = src; video.load(); }
+        video.style.display = 'block'; video.play().catch(() => {});
+      } else {
+        video.pause(); video.removeAttribute('src'); video.load(); video.style.display = 'none';
+      }
     }
+    layer.classList.toggle('disabled', w.mode === 'none');
   }
 
   function openThemeManager() {
@@ -1631,16 +1188,15 @@
       ww.opacity=Number($('#wallpaper-opacity')?.value ?? ww.opacity);
       ww.blur=Number($('#wallpaper-blur')?.value ?? ww.blur);
       ww.tint=Number($('#wallpaper-tint')?.value ?? ww.tint);
-      $$('#nav a').forEach(link => { try { const path=new URL(link.href,location.href).pathname.split('/').pop()||'index.html'; link.classList.toggle('active',path===location.pathname.split('/').pop() || (PAGE==='home'&&path==='index.html')); } catch(_){} });
-  applyLiveWallpaper();
+      applyLiveWallpaper();
       if(refreshStage){
         const info=WALLPAPER_MODES[ww.mode];
         if($('#wallpaper-stage-title')) $('#wallpaper-stage-title').textContent=ww.mode==='video'?'Custom Live Video':(info?.name||'Custom Background');
         if($('#wallpaper-stage-sub')) $('#wallpaper-stage-sub').textContent=ww.mode==='video'?'Your uploaded live wallpaper':(info?.sub||'Your custom backdrop');
       }
-      if($('#wallpaper-opacity-value')) $('#wallpaper-opacity-value').textContent = `${Math.round(ww.opacity*100)}%`;
-      if($('#wallpaper-blur-value')) $('#wallpaper-blur-value').textContent = `${ww.blur}px`;
-      if($('#wallpaper-tint-value')) $('#wallpaper-tint-value').textContent = `${Math.round(ww.tint*100)}%`;
+      if($('#wallpaper-opacity-value')) $('#wallpaper-opacity-value').value = `${Math.round(ww.opacity*100)}%`;
+      if($('#wallpaper-blur-value')) $('#wallpaper-blur-value').value = `${ww.blur}px`;
+      if($('#wallpaper-tint-value')) $('#wallpaper-tint-value').value = `${Math.round(ww.tint*100)}%`;
     };
 
     $('#wallpaper-image-file')?.addEventListener('change', async e => {
@@ -1674,66 +1230,18 @@
 
   function mixHex(a,b,weight){const p=h=>{const x=h.replace('#','');return [parseInt(x.slice(0,2),16),parseInt(x.slice(2,4),16),parseInt(x.slice(4,6),16)]};const A=p(a),B=p(b);const r=A.map((v,i)=>Math.round(v+(B[i]-v)*weight));return '#'+r.map(v=>v.toString(16).padStart(2,'0')).join('');}
 
-
-  function openArchiveDetails(type, index) {
-    const arr=type==='game'?data.games:data.anime; const item=arr[index]; if(!item) return;
-    const cats=itemCategories(type,item); const title=type==='game'?item.title:item.title;
-    const categoryHtml=cats.length?cats.map(id=>`<span class="tag">${esc(categoryLabel(id))}</span>`).join(''):'<span class="tag">UNCATEGORIZED</span>';
-    if(type==='game'){
-      const achievements=Array.isArray(item.achievements)?item.achievements:[];
-      openModal(`<p class="eyebrow">GAME // ARCHIVE DETAILS</p><h2 id="modal-title">${esc(title)}</h2><div class="detail-layout"><div class="detail-cover"><img src="${esc(item.poster||'')}" alt="${esc(title)}"></div><div class="detail-copy"><div class="category-tags">${categoryHtml}</div><div class="detail-grid"><div><span>STATUS</span><strong>${esc(item.status||'NOT SET')}</strong></div><div><span>PROGRESS</span><strong>${clamp(item.progress,0,100)}%</strong></div><div><span>RANK</span><strong>${esc(item.rank||'—')}</strong></div><div><span>MY RATING</span><strong>${item.rating===''||item.rating==null?'NOT RATED':`${Number(item.rating).toFixed(1)}/10`}</strong></div></div><p>${esc(item.goal||'No personal note yet.')}</p>${achievements.length?`<div class="detail-list"><span class="eyebrow">ACHIEVEMENTS</span>${achievements.map((a,n)=>`<div><b>0${n+1}</b>${esc(a)}</div>`).join('')}</div>`:''}${item.steamUrl?`<a class="btn ghost" href="${esc(item.steamUrl)}" target="_blank" rel="noopener noreferrer">OPEN STEAM ↗</a>`:''}${ownerMode?`<button class="btn primary" data-edit="game" data-i="${index}" type="button">EDIT GAME</button>`:''}</div></div>`);
-    } else {
-      openModal(`<p class="eyebrow">ANIME // ARCHIVE DETAILS</p><h2 id="modal-title">${esc(title)}</h2><div class="detail-layout"><div class="detail-cover"><img src="${esc(item.poster||'')}" alt="${esc(title)}"></div><div class="detail-copy"><div class="category-tags">${categoryHtml}</div><div class="detail-grid"><div><span>STATUS</span><strong>${esc(item.status||'PLANNING')}</strong></div><div><span>EPISODES</span><strong>${item.episode||0}/${item.totalEpisodes||'?'}</strong></div><div><span>RATING</span><strong>${item.score===''||item.score==null?'NOT RATED':`${esc(item.score)}/10`}</strong></div><div><span>FAVORITE</span><strong>${item.favorite?'YES':'NO'}</strong></div></div><p>${esc(item.notes||'No personal note yet.')}</p>${item.anilistId?`<a class="btn ghost" href="https://anilist.co/anime/${encodeURIComponent(item.anilistId)}" target="_blank" rel="noopener noreferrer">OPEN ANILIST ↗</a>`:''}${ownerMode?`<button class="btn primary" data-edit="anime" data-i="${index}" type="button">EDIT ANIME</button>`:''}</div></div>`);
-    }
-    applyOwnerVisibility();
-  }
-
-  function openGlobalSearch() {
-    openModal(`<p class="eyebrow">LUCIAN VEX // GLOBAL SEARCH</p><h2 id="modal-title">Search the archive</h2><p class="muted-note">Search Games, Anime, Skills and Connections from one place.</p><div class="search-row"><input id="global-search-input" placeholder="Search anything..." autocomplete="off"><button class="btn primary" id="global-search-run" type="button">SEARCH</button></div><div id="global-search-results" class="search-results"></div>`);
-    const run=()=>{
-      const q=$('#global-search-input').value.trim().toLowerCase(); const results=[];
-      if(!q) return $('#global-search-results').innerHTML='<div class="empty">Type something to search.</div>';
-      data.games.forEach((x,i)=>{const hay=[x.title,x.status,x.type,x.goal,(x.achievements||[]).join(' '),itemCategories('game',x).join(' ')].join(' ').toLowerCase(); if(hay.includes(q)) results.push({type:'GAME',title:x.title,sub:x.status,index:i,page:'gaming.html'});});
-      data.anime.forEach((x,i)=>{const hay=[x.title,x.status,x.notes,itemCategories('anime',x).join(' ')].join(' ').toLowerCase(); if(hay.includes(q)) results.push({type:'ANIME',title:x.title,sub:x.status,index:i,page:'anime.html'});});
-      data.skills.forEach((x,i)=>{if([x.name,x.desc].join(' ').toLowerCase().includes(q)) results.push({type:'SKILL',title:x.name,sub:x.desc,index:i,page:'skills.html'});});
-      data.links.forEach((x,i)=>{if([x.name,x.role,x.url].join(' ').toLowerCase().includes(q)) results.push({type:'LINK',title:x.name,sub:x.role,index:i,page:'network.html'});});
-      $('#global-search-results').innerHTML=results.length?results.slice(0,50).map(r=>`<button class="search-result search-result-button" data-deeplink="${r.page}#${r.type.toLowerCase()}-${r.index}" type="button"><div><strong>${esc(r.title)}</strong><small>${esc(r.type)} • ${esc(r.sub||'')}</small></div><span>OPEN ↗</span></button>`).join(''):'<div class="empty">No matches found.</div>';
-    };
-    $('#global-search-run')?.addEventListener('click',run); $('#global-search-input')?.addEventListener('input',run); $('#global-search-input')?.addEventListener('keydown',e=>{if(e.key==='Enter')run();});
-  }
-
-  function handleDeepLink() {
-    const hash=location.hash.replace(/^#/,''); const m=hash.match(/^(game|anime|skill|link)-(\d+)$/); if(!m) return;
-    const typeMap={game:'game',anime:'anime'};
-    if(typeMap[m[1]]) openArchiveDetails(typeMap[m[1]],Number(m[2]));
-    else document.getElementById(hash)?.scrollIntoView({behavior:'smooth',block:'center'});
-  }
-
-  function toggleFavorite(type, index) {
-    if (type === 'anime') {
-      const item=data.anime[index]; if(!item) return;
-      item.favorite=!item.favorite;
-      item.categories=itemCategories('anime',item).filter(id=>id!=='favorite');
-      if(item.favorite)item.categories.push('favorite');
-      item.updatedAt=new Date().toISOString();
-      persist(item.favorite?'Added to favorites':'Removed from favorites');
-      return;
-    }
-    if (type === 'game') {
-      const item=data.games[index]; if(!item) return;
-      const hadFavorite=itemCategories('game',item).includes('favorite');
-      const cats=itemCategories('game',item).filter(id=>id!=='favorite');
-      item.categories=hadFavorite ? (cats.length?cats:['rotation']) : ['favorite',...(cats.length?cats:['rotation'])];
-      item.category=item.categories.find(id=>id!=='favorite') || item.categories[0] || 'rotation';
-      item.updatedAt=new Date().toISOString();
-      persist(hadFavorite?'Removed from game favorites':'Added to game favorites');
-    }
+  function toggleFavorite(index) {
+    const item = data.anime[index]; if (!item) return;
+    item.favorite = !item.favorite;
+    item.categories = itemCategories('anime', item).filter(id => id !== 'favorite');
+    if (item.favorite) item.categories.push('favorite');
+    persist(item.favorite ? 'Added to favorites' : 'Removed from favorites');
   }
 
   let revealObserver = null;
 
   function setupReveal() {
-    const elements = $$('.reveal, .panel, .discord-card, .contact-box').filter(el => !el.dataset.revealBound);
+    const elements = $$('.reveal, .panel, .card, .discord-card, .contact-box').filter(el => !el.dataset.revealBound);
     if (!('IntersectionObserver' in window)) {
       elements.forEach(el => { el.classList.add('is-visible'); el.dataset.revealBound = '1'; });
       return;
@@ -1757,29 +1265,44 @@
     if (!window.matchMedia('(pointer: fine)').matches) return;
     const core = $('#cursor-core'), ring = $('#cursor-ring'), trail = $('#cursor-trail');
     if (!core || !ring || !trail) return;
-    document.body.classList.add('cursor-enhanced');
-    let x = innerWidth / 2, y = innerHeight / 2, rx = x, ry = y, raf = 0, lastMove = 0;
-    const tick = now => {
-      rx += (x - rx) * .24;
-      ry += (y - ry) * .24;
-      ring.style.transform = `translate3d(${rx}px,${ry}px,0)`;
-      if (now - lastMove < 650 || Math.abs(x-rx) > .5 || Math.abs(y-ry) > .5) raf = requestAnimationFrame(tick);
-      else raf = 0;
-    };
-    const wake = () => {
-      if (!raf) raf = requestAnimationFrame(tick);
-    };
-    const move = e => {
-      x = e.clientX; y = e.clientY; lastMove = performance.now();
-      core.style.transform = `translate3d(${x}px,${y}px,0)`;
-      trail.style.transform = `translate3d(${x}px,${y}px,0)`;
-      document.body.classList.add('cursor-active');
-      wake();
-    };
+    let x = innerWidth / 2, y = innerHeight / 2, rx = x, ry = y;
+    const move = e => { x = e.clientX; y = e.clientY; core.style.transform = `translate3d(${x}px,${y}px,0)`; trail.style.transform = `translate3d(${x}px,${y}px,0)`; document.body.classList.add('cursor-active'); if(!raf) raf=requestAnimationFrame(tick); };
+    let raf = 0;
+    const tick = () => { rx += (x - rx) * .18; ry += (y - ry) * .18; ring.style.transform = `translate3d(${rx}px,${ry}px,0)`; if (Math.abs(x-rx)+Math.abs(y-ry) > .2 || document.body.classList.contains('cursor-active')) raf=requestAnimationFrame(tick); else raf=0; };
     addEventListener('mousemove', move, { passive:true });
     addEventListener('mouseleave', () => document.body.classList.remove('cursor-active'));
     document.addEventListener('mouseover', e => { if (e.target.closest('a,button,.card,.panel,.discord-card,.filter')) document.body.classList.add('cursor-hover'); });
     document.addEventListener('mouseout', e => { if (e.target.closest('a,button,.card,.panel,.discord-card,.filter')) document.body.classList.remove('cursor-hover'); });
+    tick();
+  }
+
+
+  function openGlobalSearch() {
+    openModal(`<p class="eyebrow">LUCIAN VEX // GLOBAL SEARCH</p><h2 id="modal-title">Search the archive</h2><div class="search-row"><input id="global-q" placeholder="Games, anime, skills, connections..." autocomplete="off"></div><div id="global-results" class="search-results"></div>`);
+    const run=()=>{
+      const q=$('#global-q')?.value.trim().toLowerCase()||''; const out=$('#global-results'); if(!out) return;
+      if(!q){out.innerHTML='<div class="empty">START TYPING TO SEARCH.</div>';return;}
+      const rows=[];
+      data.games.forEach((x,i)=>{if(JSON.stringify(x).toLowerCase().includes(q))rows.push({type:'GAME',title:x.title,meta:x.status||'GAME',i,kind:'game'});});
+      data.anime.forEach((x,i)=>{if(JSON.stringify(x).toLowerCase().includes(q))rows.push({type:'ANIME',title:x.title,meta:x.status||'ANIME',i,kind:'anime'});});
+      data.skills.forEach((x,i)=>{if(JSON.stringify(x).toLowerCase().includes(q))rows.push({type:'SKILL',title:x.name,meta:`${x.level||0}%`,i,kind:'skill'});});
+      data.links.forEach((x,i)=>{if(JSON.stringify(x).toLowerCase().includes(q))rows.push({type:'NETWORK',title:x.name,meta:x.role||'',i,kind:'link'});});
+      out.innerHTML=rows.slice(0,24).map(r=>`<div class="search-result"><div><strong>${esc(r.title)}</strong><small>${esc(r.type)} • ${esc(r.meta)}</small></div>${r.kind==='game'||r.kind==='anime'?`<button class="btn ghost small" data-details="${r.kind}" data-i="${r.i}" type="button">OPEN</button>`:''}</div>`).join('')||'<div class="empty">NO RESULTS.</div>';
+    };
+    $('#global-q')?.addEventListener('input',run); setTimeout(()=>$('#global-q')?.focus(),0);
+  }
+
+  function openDetails(type, index) {
+    const item = type === 'game' ? data.games[index] : data.anime[index];
+    if (!item) return;
+    if (type === 'game') {
+      const cats = itemCategories('game',item).map(categoryLabel).join(' • ') || 'IN ROTATION';
+      const achievements = Array.isArray(item.achievements) ? item.achievements : String(item.achievements||'').split('•').map(x=>x.trim()).filter(Boolean);
+      openModal(`<p class="eyebrow">GAME // DETAILS</p><h2 id="modal-title">${esc(item.title)}</h2><div class="details-layout"><div class="detail-poster"><img src="${esc(item.poster||'')}" alt=""></div><div><div class="detail-row"><span>CATEGORIES</span><b>${esc(cats)}</b></div><div class="detail-row"><span>STATUS</span><b>${esc(item.status||'NOT STARTED')}</b></div><div class="detail-row"><span>PROGRESS</span><b>${clamp(item.progress,0,100)}%</b></div><div class="detail-row"><span>RATING</span><b>${Number(item.rating)||0 ? Number(item.rating).toFixed(1)+'/10' : 'UNRATED'}</b></div><div class="detail-row"><span>RANK</span><b>${esc(item.rank||'')}</b></div><div class="detail-row"><span>GOAL</span><b>${esc(item.goal||'')}</b></div>${item.steamUrl?`<a class="btn ghost" href="${esc(item.steamUrl)}" target="_blank" rel="noopener noreferrer">OPEN STEAM ↗</a>`:''}<div class="detail-achievements"><span>ACHIEVEMENTS</span>${achievements.length?`<ul>${achievements.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<p class="muted-note">None recorded yet.</p>'}</div></div></div>`);
+    } else {
+      const cats = itemCategories('anime',item).map(categoryLabel).join(' • ') || 'PLANNING';
+      openModal(`<p class="eyebrow">ANIME // DETAILS</p><h2 id="modal-title">${esc(item.title)}</h2><div class="details-layout"><div class="detail-poster"><img src="${esc(item.poster||'')}" alt=""></div><div><div class="detail-row"><span>CATEGORIES</span><b>${esc(cats)}</b></div><div class="detail-row"><span>EPISODES</span><b>${Number(item.episode)||0} / ${Number(item.totalEpisodes)||'?'}</b></div><div class="detail-row"><span>SCORE</span><b>${item.score?esc(item.score)+'/10':'UNRATED'}</b></div><div class="detail-row"><span>NOTES</span><b>${esc(item.notes||'')}</b></div>${item.anilistId?`<a class="btn ghost" href="https://anilist.co/anime/${encodeURIComponent(item.anilistId)}" target="_blank" rel="noopener noreferrer">OPEN ANILIST ↗</a>`:''}</div></div>`);
+    }
   }
 
   function exportData() {
@@ -1804,23 +1327,45 @@
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeModal(); });
 
   document.addEventListener('click', event => {
-    const card = event.target.closest('.link-card[data-href]');
-    if(card && !event.target.closest('button,a')){const url=card.dataset.href;if(url)window.open(url,'_blank','noopener,noreferrer');return;}
-    const add=event.target.closest('[data-open]'); if(add){if(!ownerMode)return showToast('Owner mode is locked');openManager(add.dataset.open,-1);return;}
-    const edit=event.target.closest('[data-edit]'); if(edit){if(!ownerMode)return showToast('Owner mode is locked');openManager(edit.dataset.edit,Number(edit.dataset.i));return;}
-    const del=event.target.closest('[data-del]'); if(del){if(!ownerMode)return showToast('Owner mode is locked');const type=del.dataset.del,index=Number(del.dataset.i),arr=getArray(type);if(confirm('Delete this item?')){arr.splice(index,1);persist('Deleted');}return;}
-    const save=event.target.closest('[data-save-manager]'); if(save){if(!ownerMode)return showToast('Owner mode is locked');saveManager(save.dataset.saveManager,Number(save.dataset.index));return;}
-    const addAni=event.target.closest('[data-add-anilist]'); if(addAni){if(!ownerMode)return showToast('Owner mode is locked');addFromAniList(addAni.dataset.addAnilist);return;}
-    const addSteam=event.target.closest('[data-add-steam]'); if(addSteam){if(!ownerMode)return showToast('Owner mode is locked');addFromSteam(addSteam.dataset.addSteam);return;}
-    const categoryFilter=event.target.closest('[data-category-filter]'); if(categoryFilter){const isGame=!!categoryFilter.closest('.game-toolbar');const id=categoryFilter.dataset.categoryFilter||'all';if(isGame){gameFilter=id;gameVisibleLimit=GAME_PAGE_SIZE;setFilterActive('game',id);renderGames(false);}else{animeFilter=id;animeVisibleLimit=ANIME_PAGE_SIZE;setFilterActive('anime',id);renderAnime(false);}return;}
-    const favAnime=event.target.closest('[data-fav="anime"]'); if(favAnime){if(!ownerMode)return showToast('Owner mode is locked');toggleFavorite('anime',Number(favAnime.dataset.i));return;}
-    const favGame=event.target.closest('[data-fav="game"]'); if(favGame){if(!ownerMode)return showToast('Owner mode is locked');toggleFavorite('game',Number(favGame.dataset.i));return;}
-    const details=event.target.closest('[data-details]'); if(details){openArchiveDetails(details.dataset.details,Number(details.dataset.i));return;}
-    const more=event.target.closest('[data-load-more]'); if(more){if(more.dataset.loadMore==='game'){gameVisibleLimit+=GAME_PAGE_SIZE;renderGames();}else{animeVisibleLimit+=ANIME_PAGE_SIZE;renderAnime();}return;}
-    const deep=event.target.closest('[data-deeplink]'); if(deep){location.href=deep.dataset.deeplink.includes('.html')?deep.dataset.deeplink:deep.dataset.deeplink;return;}
+    const linkCard = event.target.closest('.link-card[data-href]');
+    if (linkCard && !event.target.closest('button, a')) {
+      const url = linkCard.dataset.href;
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    const add = event.target.closest('[data-open]');
+    if (add) { if (!ownerMode) return showToast('Owner mode is locked'); openManager(add.dataset.open, -1); }
+    const edit = event.target.closest('[data-edit]');
+    if (edit) { if (!ownerMode) return showToast('Owner mode is locked'); openManager(edit.dataset.edit, Number(edit.dataset.i)); }
+    const del = event.target.closest('[data-del]');
+    if (del) {
+      if (!ownerMode) return showToast('Owner mode is locked');
+      const type = del.dataset.del, index = Number(del.dataset.i), arr = getArray(type);
+      if (confirm('Delete this item?')) { arr.splice(index, 1); persist('Deleted'); }
+    }
+    const save = event.target.closest('[data-save-manager]');
+    if (save) { if (!ownerMode) return showToast('Owner mode is locked'); saveManager(save.dataset.saveManager, Number(save.dataset.index)); }
+    const addAni = event.target.closest('[data-add-anilist]');
+    if (addAni) { if (!ownerMode) return showToast('Owner mode is locked'); addFromAniList(addAni.dataset.addAnilist); }
+    const addSteam = event.target.closest('[data-add-steam]');
+    if (addSteam) { if (!ownerMode) return showToast('Owner mode is locked'); addFromSteam(addSteam.dataset.addSteam); }
+    const detail = event.target.closest('[data-details]');
+    if (detail && (detail.classList.contains('dashboard-item') || !event.target.closest('button,a,input,select,textarea'))) { openDetails(detail.dataset.details, Number(detail.dataset.i)); return; }
+    const moreGame = event.target.closest('#game-load-more'); if (moreGame) { gameLimit += 36; renderGames(); return; }
+    const moreAnime = event.target.closest('#anime-load-more'); if (moreAnime) { animeLimit += 36; renderAnime(); return; }
+    const categoryFilter = event.target.closest('[data-category-filter]');
+    if (categoryFilter) {
+      const isGame = categoryFilter.closest('.game-toolbar');
+      const id = categoryFilter.dataset.categoryFilter || 'all';
+      if (isGame) { gameFilter = id; gameLimit = 36; } else { animeFilter = id; animeLimit = 36; }
+      const toolbar = isGame ? $('.game-toolbar') : $('.anime-toolbar');
+      [...toolbar.querySelectorAll('.filter')].forEach(x => x.classList.toggle('active', x === categoryFilter));
+      if (isGame) renderGames(); else renderAnime();
+    }
+    const fav = event.target.closest('[data-fav="anime"]');
+    if (fav) { if (!ownerMode) return showToast('Owner mode is locked'); toggleFavorite(Number(fav.dataset.i)); }
   });
 
-  $('#global-search-btn')?.addEventListener('click',openGlobalSearch);
   $('#anilist-search-open')?.addEventListener('click', aniSearch);
   $('#theme-btn')?.addEventListener('click', openThemeManager);
   $('#export-btn')?.addEventListener('click', exportData);
@@ -1830,105 +1375,23 @@
   $('#category-system-open')?.addEventListener('click', openCategoryManager);
 
   $('#menu-btn')?.addEventListener('click', () => $('#nav')?.classList.toggle('open'));
-  let filterFrame = 0;
-  $('#game-page-search')?.addEventListener('input', e => { gameSearchQuery=e.target.value.trim().toLowerCase(); gameVisibleLimit=GAME_PAGE_SIZE; cancelAnimationFrame(filterFrame); filterFrame=requestAnimationFrame(()=>renderGames(false)); });
-  $('#anime-page-search')?.addEventListener('input', e => { animeSearchQuery=e.target.value.trim().toLowerCase(); animeVisibleLimit=ANIME_PAGE_SIZE; cancelAnimationFrame(filterFrame); filterFrame=requestAnimationFrame(()=>renderAnime(false)); });
+  // Fast archive controls: completely local, no network round-trip.
+  $('#game-search')?.addEventListener('input', e => { gameSearchQuery=e.target.value; gameLimit=36; requestAnimationFrame(renderGames); });
+  $('#anime-search')?.addEventListener('input', e => { animeSearchQuery=e.target.value; animeLimit=36; requestAnimationFrame(renderAnime); });
+  $('#game-sort')?.addEventListener('change', e => { gameSortMode=e.target.value; requestAnimationFrame(renderGames); });
+  $('#anime-sort')?.addEventListener('change', e => { animeSortMode=e.target.value; requestAnimationFrame(renderAnime); });
+  $('#owner-toggle')?.addEventListener('click', () => ownerMode ? lockOwner() : unlockOwner());
+  $('#global-search-btn')?.addEventListener('click', openGlobalSearch);
   $('#theme-page-open')?.addEventListener('click', openThemeManager);
+  $('#theme-page-open-2')?.addEventListener('click', openThemeManager);
+  const currentPage = document.body.dataset.page || 'home';
+  $$('#nav a').forEach(link => { const href=link.getAttribute('href')||''; const page=href.replace(/\.html$/,'') || 'index'; link.classList.toggle('active', page === currentPage || (currentPage==='home' && page==='index')); });
   applyLiveWallpaper();
-  // Native anchors handle navigation. The CSS makes the whole padded nav item the hit area.
-  $$('#nav a').forEach(link => {
-    link.addEventListener('click', () => $('#nav')?.classList.remove('open'));
-  });
+  $$('#nav a').forEach(link => link.addEventListener('click', () => $('#nav').classList.remove('open')));
 
-  // Paint immediately from the fastest available local source. Cloud reconciliation runs in parallel.
+  // Paint immediately from trusted bundled/local data. Cloud reconciliation never blocks first render.
+  data = normalizeData(data);
   loadTheme();
   renderAll();
-  renderDiscordProfile();
-  setTimeout(handleDeepLink, 60);
-  applyOwnerVisibility();
-  setupReveal();
-
-  // Prewarm auth immediately. This removes the slow first-login/import wait while preserving
-  // persistent Supabase sessions across every page and refresh.
-  ownerWarmup = (async () => {
-    try {
-      await ensureSupabaseClient();
-      if (!cloudEnabled || !supabaseClient) return;
-      await restoreOwnerModeFast();
-      if (cloudOwner && cloudSession && ownerMode) {
-        // Don't make page navigation wait for owner data; reconcile it in the background.
-        loadCloudForOwner().then(() => {
-          buildArchiveIndex();
-          renderCurrentPage();
-        }).catch(() => {});
-      }
-    } catch (_) {}
-  })();
-
-  // Cloud reads use Supabase REST directly for public visitors. One request hydrates the complete
-  // published document; no extra timestamp request and no multi-second idle delay.
-  const refreshPublicData = async () => {
-    if (!SUPABASE_URL || !SUPABASE_KEY || ownerMode) return;
-    try {
-      const endpoint = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/lucian_site_data?id=eq.1&select=updated_at`;
-      const response = await fetch(endpoint, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, Accept: 'application/json' }, cache: 'no-store' });
-      if (!response.ok) return;
-      const rows = await response.json();
-      const remoteUpdatedAt = String(rows?.[0]?.updated_at || '');
-      if (!remoteUpdatedAt || remoteUpdatedAt === publishedUpdatedAt) return;
-      const published = await loadPublishedData();
-      const incomingUpdatedAt = publishedUpdatedAt;
-      const remoteCount = archiveCounts(published);
-      const localCount = archiveCounts(data);
-      const remoteHasArchive = remoteCount.games > 0 || remoteCount.anime > 0;
-      const localHasArchive = localCount.games > 0 || localCount.anime > 0;
-      if (published && (remoteHasArchive || !localHasArchive) && (incomingUpdatedAt !== remoteUpdatedAt || JSON.stringify(published) !== JSON.stringify(data))) {
-        data = published;
-        window.LUCIAN_DATA = data;
-        loadTheme();
-        renderAll();
-      }
-    } catch (_) {}
-  };
-
-  function dataCandidateFrom(value) {
-    if (!value) return null;
-    if (typeof value === 'object') return value;
-    if (typeof value === 'string') {
-      try { const parsed = JSON.parse(value); return parsed && typeof parsed === 'object' ? parsed : null; } catch (_) {}
-    }
-    return null;
-  }
-
-  async function hydrateLocalFileFallback() {
-    if (dataHydrated || dataHydrationRunning) return;
-    dataHydrationRunning = true;
-    try {
-      const response = await fetch('data.json', { cache: 'force-cache' });
-      if (response.ok) {
-        const json = await response.json();
-        const candidate = normalizeData(dataCandidateFrom(json) || {});
-        // data.json is only a fallback. Never let it replace a populated data.js archive.
-        if (dataHealthScore(data) === 0 && dataHealthScore(candidate) > 0) {
-          data = candidate;
-          dataHydrated = true;
-          try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(candidate)); } catch (_) {}
-          buildArchiveIndex(); renderedIndexVersion = archiveIndexVersion; renderCurrentPage();
-        }
-      }
-    } catch (_) {}
-    finally { dataHydrationRunning = false; }
-  }
-
-  // Hydrate cloud data immediately, but never block the first paint. A populated local archive
-  // stays visible until the remote document has been validated.
-  hydrateLocalFileFallback();
-  refreshPublicData();
-
-  // Keep other devices in sync without loading the full realtime client for every visitor.
-  setInterval(() => {
-    if (document.visibilityState === 'visible' && !ownerMode) refreshPublicData();
-  }, 60000);
-
   setupCursor();
 })();

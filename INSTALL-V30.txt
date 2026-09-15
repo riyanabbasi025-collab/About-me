@@ -1,0 +1,43 @@
+LUCIAN VEX V30 — STABLE REBUILD
+
+This is a clean stabilization build based on the last feature-complete archive architecture.
+
+IMPORTANT:
+- Delete NOTHING from your existing About-me repository.
+- Make a full backup of the repo folder before installing.
+- Merge/replace only the files included in this ZIP.
+- KEEP your existing data.js exactly as it is.
+- KEEP your existing supabase-config.js exactly as it is.
+- KEEP your entire images/ folder and all personal media.
+
+Included pages:
+index.html, about.html, skills.html, gaming.html, anime.html, network.html, contact.html, theme.html
+
+Core fixes/features:
+- Separate pages with one shared navigation system.
+- Fast first paint; content is visible even if an optional script/API is delayed.
+- Existing data.js is the first trusted data source.
+- Cloud data reconciles in the background and cannot replace a populated archive with an empty response.
+- Persistent owner session across pages/refreshes using Supabase Auth.
+- Lock Owner Mode without signing out of the authenticated session.
+- Local-first saves with background cloud sync/retry.
+- Universal Games + Anime categories, including custom categories and multi-category items.
+- Fast local archive filtering/search/sorting.
+- Game detail panels with achievements and Lucian rating.
+- Anime detail panels with AniList link, episodes, score and notes.
+- Global archive search.
+- Home dashboard with live counts/top items/recent updates.
+- Full-area clickable network cards.
+- Full-area navigation anchors.
+- Live wallpaper/theme system preserved.
+- Native cursor remains visible; optional custom cursor overlays it.
+- Steam search no longer depends on GitHub Pages Netlify Functions: uses CheapShark Steam catalog data with direct Steam/SteamDB fallbacks.
+
+After copying files:
+1. Open GitHub Desktop.
+2. Inspect Changes before committing.
+3. Make sure images/, data.js and supabase-config.js are NOT deleted/replaced.
+4. Commit.
+5. Push origin.
+6. Wait for GitHub Pages deployment.
+7. Press Ctrl+F5 on the site.
