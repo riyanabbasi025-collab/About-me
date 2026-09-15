@@ -1,0 +1,3 @@
+LUCian Vex V28 Recovery Instructions
+
+This update adds a recovery renderer after the main app so blank archive pages can recover when the main script fails. It does not include or replace data.js, supabase-config.js, or images.
