@@ -1,4 +1,4 @@
-const CACHE = "lucian-vex-static-v32";
+const CACHE = "lucian-vex-static-v33";
 const STATIC = [
   "./", "./index.html", "./about.html", "./skills.html", "./gaming.html", "./anime.html", "./network.html", "./contact.html", "./theme.html", "./style.css", "./script.js"
 ];
@@ -24,7 +24,7 @@ self.addEventListener("fetch", event => {
   }
   if (url.hostname.endsWith("supabase.co") && url.pathname.includes("/rest/v1/lucian_site_data")) {
     event.respondWith((async () => {
-      const cache = await caches.open("lucian-vex-cloud-v32");
+      const cache = await caches.open("lucian-vex-cloud-v33");
       const cached = await cache.match(event.request);
       const revalidate = fetch(event.request).then(async response => {
         if (response.ok) await cache.put(event.request, response.clone());

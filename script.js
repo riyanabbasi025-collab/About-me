@@ -251,6 +251,13 @@
   }
 
   async function unlockOwner() {
+    // The Supabase client is lazy-loaded for performance. Never report a
+    // configuration failure merely because the client has not finished loading.
+    // Initialize/reuse it here, then verify the existing persistent session.
+    if (ownerMode && cloudOwner && cloudSession) return true;
+    if (cloudEnabled && !supabaseClient) {
+      try { await ensureSupabase(); } catch (_) {}
+    }
     if (!cloudEnabled || !supabaseClient) return showToast('Secure owner login is unavailable — check Supabase configuration');
     await loadOwnerSession();
     if (cloudOwner && cloudSession) {
@@ -1468,7 +1475,7 @@
   loadTheme();
   renderAll();
   setupCursor();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=32').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=33').catch(() => {});
 
   const applyIncomingData = nextData => {
     const next = normalizeData(nextData || {});
