@@ -211,6 +211,7 @@
     value.games ||= [];
     value.anime ||= [];
     value.links ||= [];
+    value.iconOverrides = value.iconOverrides && typeof value.iconOverrides === 'object' && !Array.isArray(value.iconOverrides) ? value.iconOverrides : {};
     value.categories = normalizeCategoryLibrary(value.categories);
     value.games.forEach(item => {
       item.categories = itemCategories('game', item, value.categories);
@@ -390,7 +391,7 @@
     if (!data.skills.length) { el.innerHTML = '<div class="empty">No skills yet. Use ADD SKILL to create one.</div>'; return; }
     el.innerHTML = data.skills.map((item, i) => `
       <article class="card skill-card">
-        <div class="skill-top"><span class="skill-name">${esc(item.name)}</span><span class="level">${clamp(item.level,0,100)}%</span></div>
+        <div class="skill-top"><span class="skill-name"><span class="item-icon">${iconMarkup(item,'skill',i)}</span>${esc(item.name)}</span><span class="level">${clamp(item.level,0,100)}%</span></div>
         <div class="bar"><span style="width:${clamp(item.level,0,100)}%"></span></div>
         <p class="card-desc">${esc(item.desc)}</p>
         <div class="card-actions" style="padding:16px 0 0"><span></span><span>
@@ -410,7 +411,7 @@
     const used = new Set();
     (data[type === 'game' ? 'games' : 'anime'] || []).forEach(item => itemCategories(type, item).forEach(id => used.add(id)));
     const cats = (data.categories || []).filter(cat => used.has(cat.id));
-    toolbar.innerHTML = `<button class="${type === 'game' ? 'game-filter' : 'filter'} filter active" data-category-filter="all" type="button">ALL ${type === 'game' ? 'GAMES' : ''}</button>` + cats.map(cat => `<button class="${type === 'game' ? 'game-filter' : 'filter'} filter" data-category-filter="${esc(cat.id)}" type="button">${esc(cat.label)}</button>`).join('');
+    toolbar.innerHTML = `<button class="${type === 'game' ? 'game-filter' : 'filter'} filter active" data-category-filter="all" type="button">ALL ${type === 'game' ? 'GAMES' : ''}</button>` + cats.map(cat => `<button class="${type === 'game' ? 'game-filter' : 'filter'} filter" data-category-filter="${esc(cat.id)}" type="button"><span class="filter-icon">${iconMarkup(cat,'category')}</span>${esc(cat.label)}</button>`).join('');
     if (type === 'game') gameFilter = gameFilter === 'all' || cats.some(x => x.id === gameFilter) ? gameFilter : 'all';
     else animeFilter = animeFilter === 'all' || cats.some(x => x.id === animeFilter) ? animeFilter : 'all';
     $$('.anime-toolbar [data-category-filter], .game-toolbar [data-category-filter]').forEach(button => {
@@ -459,7 +460,7 @@
       const categoryTags = categories.length ? categories.map(id => `<span class="tag">${esc(gameCategoryLabel(id))}</span>`).join('') : '<span class="tag">IN ROTATION</span>';
       return `<article class="card archive-card" data-details="game" data-i="${i}">
         <div class="poster-frame"><img class="poster" src="${esc(item.poster || '')}" alt="${esc(item.title || '')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"></div>
-        <div class="card-body"><div class="category-tags">${categoryTags}</div><h3>${esc(item.title)}</h3><div class="game-meta"><span>${esc(item.rank || 'No rank')}</span><span>${Number(item.rating)||0 ? Number(item.rating).toFixed(1)+'/10' : 'UNRATED'}</span><span>${clamp(item.progress,0,100)}%</span></div><div class="progress-line"><span style="width:${clamp(item.progress,0,100)}%"></span></div>${item.goal?`<p class="card-desc" style="margin-top:12px">${esc(item.goal)}</p>`:''}${achievements?`<p class="card-desc game-achievements" style="margin-top:10px"><strong>ACHIEVEMENTS:</strong> ${esc(achievements)}</p>`:''}</div>
+        <div class="card-body"><div class="category-tags">${categoryTags}</div><h3><span class="item-icon">${iconMarkup(item,'game',i)}</span>${esc(item.title)}</h3><div class="game-meta"><span>${esc(item.rank || 'No rank')}</span><span>${Number(item.rating)||0 ? Number(item.rating).toFixed(1)+'/10' : 'UNRATED'}</span><span>${clamp(item.progress,0,100)}%</span></div><div class="progress-line"><span style="width:${clamp(item.progress,0,100)}%"></span></div>${item.goal?`<p class="card-desc" style="margin-top:12px">${esc(item.goal)}</p>`:''}${achievements?`<p class="card-desc game-achievements" style="margin-top:10px"><strong>ACHIEVEMENTS:</strong> ${esc(achievements)}</p>`:''}</div>
         <div class="card-actions"><span class="muted-note">CLICK CARD FOR DETAILS</span><span><button class="icon-btn owner-only" data-edit="game" data-i="${i}" type="button">EDIT</button><button class="icon-btn owner-only" data-del="game" data-i="${i}" type="button">DELETE</button></span></div>
       </article>`;
     }).join('');
@@ -487,7 +488,7 @@
     const visible = filtered.slice(0, animeLimit);
     el.innerHTML = visible.map(item => {
       const i=data.anime.indexOf(item); const pct=item.totalEpisodes?clamp(Math.round((item.episode||0)/item.totalEpisodes*100),0,100):0; const cats=itemCategories('anime',item); const tags=cats.length?cats.map(id=>`<span class="tag">${esc(categoryLabel(id))}</span>`).join(''):'<span class="tag">PLANNING</span>';
-      return `<article class="card anime-card archive-card" data-details="anime" data-i="${i}"><div class="poster-frame anime"><img class="poster" src="${esc(item.poster||'')}" alt="${esc(item.title||'')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"></div><div class="card-body"><div class="category-tags">${tags}</div><h3>${esc(item.title)}</h3><div class="anime-meta"><span>EP ${item.episode||0}/${item.totalEpisodes||'?'}</span><span>${item.score?esc(item.score)+'/10':'UNRATED'}</span></div><div class="progress-line"><span style="width:${pct}%"></span></div><p class="card-desc" style="margin-top:10px">${esc(item.notes||'')}</p></div><div class="card-actions"><button class="favorite owner-only ${item.favorite?'active':''}" data-fav="anime" data-i="${i}" type="button" aria-label="Toggle favorite">${item.favorite?'♥':'♡'}</button><span><button class="icon-btn owner-only" data-edit="anime" data-i="${i}" type="button">EDIT</button><button class="icon-btn owner-only" data-del="anime" data-i="${i}" type="button">DELETE</button></span></div></article>`;
+      return `<article class="card anime-card archive-card" data-details="anime" data-i="${i}"><div class="poster-frame anime"><img class="poster" src="${esc(item.poster||'')}" alt="${esc(item.title||'')}" loading="lazy" onerror="this.closest('.poster-frame').classList.add('broken');this.remove()"></div><div class="card-body"><div class="category-tags">${tags}</div><h3><span class="item-icon">${iconMarkup(item,'anime',i)}</span>${esc(item.title)}</h3><div class="anime-meta"><span>EP ${item.episode||0}/${item.totalEpisodes||'?'}</span><span>${item.score?esc(item.score)+'/10':'UNRATED'}</span></div><div class="progress-line"><span style="width:${pct}%"></span></div><p class="card-desc" style="margin-top:10px">${esc(item.notes||'')}</p></div><div class="card-actions"><button class="favorite owner-only ${item.favorite?'active':''}" data-fav="anime" data-i="${i}" type="button" aria-label="Toggle favorite">${item.favorite?'♥':'♡'}</button><span><button class="icon-btn owner-only" data-edit="anime" data-i="${i}" type="button">EDIT</button><button class="icon-btn owner-only" data-del="anime" data-i="${i}" type="button">DELETE</button></span></div></article>`;
     }).join('');
     if (filtered.length > visible.length) el.insertAdjacentHTML('beforeend', `<button class="load-more btn ghost" id="anime-load-more" type="button">LOAD ${Math.min(36,filtered.length-visible.length)} MORE · ${filtered.length-visible.length} REMAINING</button>`);
     updateArchiveCount('anime',visible.length,filtered.length);
@@ -523,10 +524,58 @@
     return '';
   }
 
-  function iconMarkup(item) {
-    const slug = iconSlug(item);
-    if (slug) return `<img src="https://cdn.simpleicons.org/${slug}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
-    return `<span>${esc(item.icon || '↗')}</span>`;
+  function iconKey(kind, item, index) {
+    if (kind === 'nav') return `nav:${String(item || '').trim().toLowerCase()}`;
+    if (kind === 'system') return `system:${String(item || '').trim().toLowerCase()}`;
+    if (kind === 'category') return `category:${String(item || '').trim().toLowerCase()}`;
+    const raw = kind === 'link' ? `${item?.name || ''}|${item?.url || ''}` : (item?.title || item?.name || `${kind}-${index ?? 0}`);
+    return `${kind}:${slugCategory(raw) || String(index ?? 0)}`;
+  }
+
+  const DEFAULT_ICON_TEXT = { nav:{home:'⌂',about:'◈',skills:'✦',gaming:'◉',anime:'✧',network:'⌁',contact:'✉',theme:'◒'}, system:{search:'⌕',owner:'♛',export:'⇩',categories:'≡',theme:'◒',icons:'◈'} };
+  const DEFAULT_ITEM_ICON = { game:'🎮', anime:'◈', skill:'✦', category:'◆' };
+
+  function customIconSrc(key) {
+    const value = data?.iconOverrides?.[key];
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function iconMarkup(item, kind='link', index=0) {
+    const key = iconKey(kind, item, index);
+    const custom = customIconSrc(key);
+    if (custom) return `<img src="${esc(custom)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+    if (kind === 'link') {
+      const slug = iconSlug(item);
+      if (slug) return `<img src="https://cdn.simpleicons.org/${slug}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+      return `<span>${esc(item.icon || '↗')}</span>`;
+    }
+    return `<span>${esc(DEFAULT_ITEM_ICON[kind] || '◈')}</span>`;
+  }
+
+  function staticIconMarkup(key, fallback) {
+    const custom = customIconSrc(key);
+    return custom ? `<img src="${esc(custom)}" alt="" loading="lazy">` : `<span>${esc(fallback)}</span>`;
+  }
+
+  function applyStaticIcons() {
+    const nav = $('#nav');
+    if (nav) nav.querySelectorAll('a').forEach(link => {
+      if (link.dataset.iconReady === '1') return;
+      const label = String(link.textContent || '').trim().toLowerCase();
+      const key = `nav:${label === 'home' ? 'home' : label}`;
+      const fallback = DEFAULT_ICON_TEXT.nav[label] || '◈';
+      const cleanLabel = String(link.textContent || '').trim();
+      link.innerHTML = `${staticIconMarkup(key, fallback)}<span>${esc(cleanLabel)}</span>`;
+      link.setAttribute('data-icon-key', key);
+      link.dataset.iconReady = '1';
+    });
+    const systems = [['global-search-btn','search'],['owner-toggle','owner'],['export-btn','export'],['category-system-open','categories'],['theme-btn','theme'],['icon-manager-open','icons']];
+    systems.forEach(([id,name]) => {
+      const btn = document.getElementById(id); if (!btn || btn.dataset.iconReady) return;
+      const text = String(btn.textContent || '').trim();
+      btn.innerHTML = `${staticIconMarkup(`system:${name}`, DEFAULT_ICON_TEXT.system[name])}<span>${esc(text)}</span>`;
+      btn.dataset.iconReady = '1';
+    });
   }
 
   function renderLinks() {
@@ -536,7 +585,7 @@
     el.innerHTML = data.links.map((item, i) => `
       <article class="card link-card" data-href="${esc(safeUrl(item.url))}" role="link" tabindex="0" aria-label="Open ${esc(item.name)}">
         <a class="link-card-main" href="${esc(safeUrl(item.url))}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(item.name)}">
-          <div class="link-icon">${iconMarkup(item)}</div>
+          <div class="link-icon">${iconMarkup(item,'link',i)}</div>
           <div style="flex:1"><strong>${esc(item.name)}</strong><p>${esc(item.role || '')}</p></div>
         </a>
         <div class="link-card-actions"><button class="icon-btn owner-only" data-edit="link" data-i="${i}" type="button">EDIT</button> <button class="icon-btn owner-only" data-del="link" data-i="${i}" type="button">DELETE</button></div>
@@ -1164,6 +1213,58 @@
     layer.classList.toggle('disabled', w.mode === 'none');
   }
 
+
+  function collectIconTargets() {
+    const targets = [];
+    const navLabels = {home:'HOME',about:'ABOUT',skills:'SKILLS',gaming:'GAMING',anime:'ANIME',network:'NETWORK',contact:'CONTACT',theme:'THEME'};
+    Object.entries(navLabels).forEach(([id,label]) => targets.push({key:`nav:${id}`, label, group:'NAVIGATION', fallback:DEFAULT_ICON_TEXT.nav[id]}));
+    const systemLabels = {search:'SEARCH',owner:'OWNER',export:'EXPORT',categories:'CATEGORIES',theme:'THEME',icons:'ICONS'};
+    Object.entries(systemLabels).forEach(([id,label]) => targets.push({key:`system:${id}`, label, group:'SYSTEM', fallback:DEFAULT_ICON_TEXT.system[id], ownerOnly:true}));
+    data.links.forEach((item,i)=>targets.push({key:iconKey('link',item,i),label:item.name||`Connection ${i+1}`,group:'CONNECTIONS',kind:'link',item,index:i,defaultMarkup:iconMarkup(item,'link',i)}));
+    data.games.forEach((item,i)=>targets.push({key:iconKey('game',item,i),label:item.title||`Game ${i+1}`,group:'GAMES',kind:'game',item,index:i,defaultMarkup:iconMarkup(item,'game',i)}));
+    data.anime.forEach((item,i)=>targets.push({key:iconKey('anime',item,i),label:item.title||`Anime ${i+1}`,group:'ANIME',kind:'anime',item,index:i,defaultMarkup:iconMarkup(item,'anime',i)}));
+    data.skills.forEach((item,i)=>targets.push({key:iconKey('skill',item,i),label:item.name||`Skill ${i+1}`,group:'SKILLS',kind:'skill',item,index:i,defaultMarkup:iconMarkup(item,'skill',i)}));
+    (data.categories||[]).forEach(cat=>targets.push({key:iconKey('category',cat.id),label:cat.label,group:'CATEGORIES',kind:'category',item:cat,defaultMarkup:iconMarkup(cat,'category')}));
+    return targets;
+  }
+
+  function compressIcon(file) {
+    return new Promise((resolve,reject)=>{
+      if (!file) return reject(new Error('No file'));
+      if (file.size > 2*1024*1024) return reject(new Error('ICON_TOO_LARGE'));
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('READ_FAILED'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('IMAGE_FAILED'));
+        img.onload = () => {
+          const max = 160, scale = Math.min(1,max/img.width,max/img.height);
+          const canvas = document.createElement('canvas');
+          canvas.width=Math.max(1,Math.round(img.width*scale)); canvas.height=Math.max(1,Math.round(img.height*scale));
+          const ctx=canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(img,0,0,canvas.width,canvas.height);
+          resolve(canvas.toDataURL('image/webp',0.78));
+        };
+        img.src=String(reader.result||'');
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function openIconManager() {
+    if (!ownerMode) return showToast('Owner mode is locked');
+    const targets = collectIconTargets();
+    const grouped = targets.reduce((map,t)=>((map[t.group] ||= []).push(t),map),{});
+    openModal(`<p class="eyebrow">VISUAL SYSTEM // ICON MANAGER</p><h2 id="modal-title">Custom Icons Everywhere</h2><p class="muted-note">Upload or paste an icon for navigation, system controls, connections, games, anime, skills and categories. REMOVE / RESTORE returns that item to its normal default icon.</p><div class="icon-manager-list">${Object.entries(grouped).map(([group,items])=>`<section class="icon-group"><div class="icon-group-head"><span>${esc(group)}</span><b>${items.length}</b></div>${items.map(t=>{const current=customIconSrc(t.key);return `<div class="icon-manager-row" data-icon-row="${esc(t.key)}"><div class="icon-manager-preview">${current?`<img src="${esc(current)}" alt="">`:t.defaultMarkup}</div><div class="icon-manager-name"><strong>${esc(t.label)}</strong><small>${current?'CUSTOM ICON':'DEFAULT ICON'}</small></div><input class="icon-url" data-icon-url type="url" value="${current && !current.startsWith('data:')?esc(current):''}" placeholder="Icon URL (optional)"><label class="btn ghost small icon-upload-label">UPLOAD<input type="file" data-icon-file accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="btn ghost small" data-icon-clear="${esc(t.key)}" type="button">REMOVE / RESTORE</button></div>`}).join('')}</section>`).join('')}</div><div class="form-grid two"><button class="btn ghost" id="icon-reset-all" type="button">RESTORE ALL DEFAULTS</button><button class="btn primary" id="icon-save-all" type="button">SAVE ICON SYSTEM</button></div>`, {focus:false});
+    content.querySelectorAll('[data-icon-file]').forEach(input=>input.addEventListener('change',async event=>{
+      const file=event.target.files?.[0]; if(!file) return;
+      try{ const encoded=await compressIcon(file); const row=input.closest('[data-icon-row]'); if(row){ row.dataset.pendingIcon=encoded; row.querySelector('[data-icon-url]').value=''; row.querySelector('.icon-manager-preview').innerHTML=`<img src="${esc(encoded)}" alt="">`; row.querySelector('.icon-manager-name small').textContent='CUSTOM ICON'; } }
+      catch(err){ showToast(err.message==='ICON_TOO_LARGE'?'Icon is too large — keep it under 2 MB':'Could not read that icon'); }
+    }));
+    content.querySelectorAll('[data-icon-clear]').forEach(btn=>btn.addEventListener('click',()=>{ const row=btn.closest('[data-icon-row]'); if(row){ delete data.iconOverrides[btn.dataset.iconClear]; row.dataset.pendingIcon=''; row.querySelector('[data-icon-url]').value=''; row.querySelector('.icon-manager-name small').textContent='DEFAULT ICON'; row.querySelector('.icon-manager-preview').innerHTML=targets.find(t=>t.key===btn.dataset.iconClear)?.defaultMarkup||'<span>◈</span>'; showToast('Icon restored to default'); } }));
+    $('#icon-reset-all')?.addEventListener('click',()=>{ if(!confirm('Restore every icon to its default?')) return; data.iconOverrides={}; content.querySelectorAll('[data-icon-row]').forEach(row=>{row.dataset.pendingIcon='';row.querySelector('[data-icon-url]').value='';row.querySelector('.icon-manager-name small').textContent='DEFAULT ICON';row.querySelector('.icon-manager-preview').innerHTML=targets.find(t=>t.key===row.dataset.iconRow)?.defaultMarkup||'<span>◈</span>';}); showToast('All icons restored'); });
+    $('#icon-save-all')?.addEventListener('click',()=>{ content.querySelectorAll('[data-icon-row]').forEach(row=>{ const key=row.dataset.iconRow; const pending=row.dataset.pendingIcon; const url=safeUrl(row.querySelector('[data-icon-url]')?.value||''); if(pending) data.iconOverrides[key]=pending; else if(url) data.iconOverrides[key]=url; else if(!(key in data.iconOverrides)) delete data.iconOverrides[key]; }); persist('Icon system saved'); applyStaticIcons(); renderAll(); closeModal(); });
+  }
+
   function openThemeManager() {
     const saved = (() => { try { return JSON.parse(localStorage.getItem('lucian-vex-theme') || 'null'); } catch (_) { return null; } })();
     const active = saved?.name || 'vex-noir';
@@ -1454,6 +1555,7 @@
 
   $('#steam-search-open')?.addEventListener('click', steamSearch);
   $('#category-system-open')?.addEventListener('click', openCategoryManager);
+  $('#icon-manager-open')?.addEventListener('click', openIconManager);
 
   $('#menu-btn')?.addEventListener('click', () => $('#nav')?.classList.toggle('open'));
   // Fast archive controls: completely local, no network round-trip.
@@ -1474,6 +1576,7 @@
   data = normalizeData(data);
   loadTheme();
   renderAll();
+  applyStaticIcons();
   setupCursor();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=33').catch(() => {});
 
@@ -1487,6 +1590,7 @@
       writeDataCache(data).catch(() => {});
       loadTheme();
       renderAll();
+      applyStaticIcons();
       applyLiveWallpaper();
       return true;
     }
