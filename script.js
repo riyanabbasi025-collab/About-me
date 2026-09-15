@@ -9,8 +9,31 @@
   const SUPABASE_CONFIG = window.LUCIAN_SUPABASE_CONFIG || {};
   const SUPABASE_URL = String(SUPABASE_CONFIG.url || '').trim();
   const SUPABASE_KEY = String(SUPABASE_CONFIG.publishableKey || '').trim();
-  const cloudEnabled = Boolean(window.supabase && SUPABASE_URL && SUPABASE_KEY);
-  const supabaseClient = cloudEnabled ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
+  const cloudConfigured = Boolean(SUPABASE_URL && SUPABASE_KEY);
+  let supabaseClient = null;
+  let supabaseLoader = null;
+  async function ensureSupabase() {
+    if (supabaseClient) return supabaseClient;
+    if (!cloudConfigured) return null;
+    if (!supabaseLoader) {
+      supabaseLoader = new Promise((resolve, reject) => {
+        if (window.supabase) return resolve(window.supabase);
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+        script.async = true;
+        script.onload = () => resolve(window.supabase);
+        script.onerror = () => reject(new Error('Supabase library failed to load'));
+        document.head.appendChild(script);
+      });
+    }
+    try {
+      const lib = await supabaseLoader;
+      if (!lib?.createClient) return null;
+      supabaseClient = lib.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+      return supabaseClient;
+    } catch (_) { return null; }
+  }
+  const cloudEnabled = cloudConfigured;
   let cloudSession = null;
   let cloudOwner = false;
   let ownerMode = false;
@@ -29,25 +52,28 @@
 
   async function loadPublishedData() {
     const bundled = normalizeData(window.LUCIAN_DATA || {});
-    if (cloudEnabled) {
-      try {
-        const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data,updated_at').eq('id', 1).single();
-        if (error) throw error;
-        if (row?.data && typeof row.data === 'object') {
-          const remote = normalizeData(row.data);
-          const rc = { g: remote.games.length, a: remote.anime.length, s: remote.skills.length };
-          const bc = { g: bundled.games.length, a: bundled.anime.length, s: bundled.skills.length };
-          if ((rc.g + rc.a + rc.s) > 0 || (bc.g + bc.a + bc.s) === 0) return remote;
-        }
-      } catch (error) {
-        console.warn('Lucian Vex: cloud data unavailable; using bundled/local data.', error);
-      }
+    const local = normalizeData(saved || {});
+    const base = (local.games.length + local.anime.length + local.skills.length) > 0 ? local : bundled;
+    if (!cloudEnabled) return base;
+    try {
+      const url = `${SUPABASE_URL}/rest/v1/lucian_site_data?select=data,updated_at&id=eq.1`;
+      const response = await fetch(url, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }, cache: 'no-store' });
+      if (!response.ok) throw new Error(`Cloud data HTTP ${response.status}`);
+      const rows = await response.json();
+      const remote = normalizeData(rows?.[0]?.data || {});
+      const remoteCount = remote.games.length + remote.anime.length + remote.skills.length + remote.links.length;
+      const baseCount = base.games.length + base.anime.length + base.skills.length + base.links.length;
+      if (remoteCount > 0 || baseCount === 0) return remote;
+    } catch (error) {
+      console.warn('Lucian Vex: background cloud data unavailable; keeping cached/bundled data.', error);
     }
-    return bundled;
+    return base;
   }
 
   async function loadOwnerSession() {
     if (!cloudEnabled) return null;
+    supabaseClient = await ensureSupabase();
+    if (!supabaseClient) return null;
     try {
       const { data: authData } = await supabaseClient.auth.getSession();
       cloudSession = authData?.session || null;
@@ -62,6 +88,8 @@
 
   async function loadCloudForOwner() {
     if (!cloudEnabled || !cloudSession) return false;
+    supabaseClient = supabaseClient || await ensureSupabase();
+    if (!supabaseClient) return false;
     try {
       const { data: row, error } = await supabaseClient.from('lucian_site_data').select('data').eq('id', 1).single();
       if (error) throw error;
@@ -1394,4 +1422,19 @@
   loadTheme();
   renderAll();
   setupCursor();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=31').catch(() => {});
+  // Cache-first boot: paint immediately, then reconcile cloud data in the background.
+  loadPublishedData().then(remote => {
+    const remoteCount = (remote.games?.length || 0) + (remote.anime?.length || 0) + (remote.skills?.length || 0) + (remote.links?.length || 0);
+    const localCount = (data.games?.length || 0) + (data.anime?.length || 0) + (data.skills?.length || 0) + (data.links?.length || 0);
+    if (remoteCount > 0 && JSON.stringify(remote) !== JSON.stringify(data)) {
+      data = normalizeData(remote);
+      try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (_) {}
+      loadTheme();
+      renderAll();
+      applyLiveWallpaper();
+    } else if (localCount > 0) {
+      try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (_) {}
+    }
+  });
 })();
