@@ -203,3 +203,13 @@ nav a:hover,nav a.active{background:rgba(255,255,255,.035)}
 .archive-card .source-badge{backdrop-filter:none}
 .filter,.details-btn,.icon-btn,.btn,.theme-btn,.wallpaper-mode{transition:background-color .12s,border-color .12s,color .12s,opacity .12s,transform .12s}
 @media(max-width:900px){nav.open a{width:100%;justify-content:flex-start;min-height:42px;padding:0 12px}}
+
+/* V25: universal navigation hit area */
+.topbar nav{display:flex;align-items:stretch;gap:4px;flex-wrap:nowrap}
+.topbar nav a{display:flex;align-items:center;justify-content:center;min-height:38px;padding:0 14px;border:1px solid transparent;border-radius:10px;line-height:1;white-space:nowrap;cursor:pointer;touch-action:manipulation;text-decoration:none}
+.topbar nav a:hover{border-color:var(--line);background:rgba(255,255,255,.035)}
+.topbar nav a.active{border-color:color-mix(in srgb,var(--pink) 36%,transparent);background:linear-gradient(135deg,color-mix(in srgb,var(--pink) 9%,transparent),color-mix(in srgb,var(--purple) 9%,transparent));color:var(--white)}
+.owner-unlocked .owner-only{display:inline-flex !important}
+.owner-unlocked nav a.owner-only{display:flex !important}
+@media(max-width:1100px){.topbar nav{gap:2px}.topbar nav a{padding:0 10px;font-size:9px}}
+@media(max-width:900px){.topbar nav.open a{display:flex !important;width:100%;min-height:44px;padding:0 14px;justify-content:flex-start;border-radius:9px}}

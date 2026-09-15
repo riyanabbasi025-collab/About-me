@@ -14,6 +14,8 @@
   const SUPABASE_KEY = String(SUPABASE_CONFIG.publishableKey || '').trim();
   let cloudEnabled = Boolean(SUPABASE_URL && SUPABASE_KEY);
   let supabaseClient = null;
+  // Start importing Supabase immediately; owner interactions can reuse the same in-flight promise.
+  let supabaseWarmupStarted = false;
   let supabaseLoading = null;
   let cloudSession = null;
 
@@ -37,6 +39,10 @@
     })();
     return supabaseLoading;
   }
+  if (cloudEnabled) {
+    supabaseWarmupStarted = true;
+    ensureSupabaseClient().catch(() => {});
+  }
   let cloudOwner = false;
   let saved = null;
   let cachedPublished = null;
@@ -54,9 +60,11 @@
   function healthiestData(...candidates) {
     return clone(candidates.filter(Boolean).reduce((best, candidate) => dataHealthScore(candidate) > dataHealthScore(best) ? candidate : best, {}));
   }
-  const bundledData = window.LUCIAN_DATA || {};
+  const bundledData = dataCandidateFrom(window.LUCIAN_DATA) || {};
   let data = healthiestData(bundledData, saved, cachedPublished);
   data = normalizeData(data);
+  let dataHydrated = dataHealthScore(data) > 0;
+  let dataHydrationRunning = false;
 
   async function loadPublishedData() {
     if (SUPABASE_URL && SUPABASE_KEY) {
@@ -76,7 +84,7 @@
           const row = Array.isArray(rows) ? rows[0] : null;
           if (row?.data && typeof row.data === 'object') {
             publishedUpdatedAt = String(row.updated_at || '');
-            const normalized = normalizeData(row.data);
+            const normalized = normalizeData(dataCandidateFrom(row.data) || {});
             const remoteCount = archiveCounts(normalized);
             const localCount = archiveCounts(data);
             const remoteHasArchive = remoteCount.games > 0 || remoteCount.anime > 0;
@@ -91,7 +99,7 @@
         console.warn('Lucian Vex: background cloud read failed; using cached/bundled data.', error);
       }
     }
-    return normalizeData(cachedPublished || saved || window.LUCIAN_DATA || {});
+    return normalizeData(dataCandidateFrom(cachedPublished) || dataCandidateFrom(saved) || dataCandidateFrom(window.LUCIAN_DATA) || {});
   }
 
   async function loadOwnerSession() {
@@ -103,7 +111,10 @@
       cloudOwner = false;
       if (cloudSession?.user) {
         const { data: row, error } = await supabaseClient.from('lucian_site_data').select('owner_uid').eq('id', 1).single();
-        if (!error && row?.owner_uid) cloudOwner = String(row.owner_uid) === String(cloudSession.user.id);
+        if (!error && row?.owner_uid) {
+          cloudOwner = String(row.owner_uid) === String(cloudSession.user.id);
+          if (cloudOwner) { try { localStorage.setItem(VERIFIED_OWNER_UID_KEY, String(row.owner_uid)); } catch (_) {} }
+        }
       }
       return cloudSession;
     } catch (_) { return null; }
@@ -312,7 +323,18 @@
   const safeUrl = value => String(value || '').trim();
   const clamp = (n, min, max) => Math.min(max, Math.max(min, Number(n) || 0));
   const OWNER_PIN = 'LVX-9K7C-Q4PM-2R8N';
+  const OWNER_PREF_KEY = 'lucian-vex-owner-preference-v2';
+  const VERIFIED_OWNER_UID_KEY = 'lucian-vex-verified-owner-uid-v1';
   let ownerMode = false;
+  let ownerWarmup = null;
+
+  function rememberOwnerPreference(enabled) {
+    try { localStorage.setItem(OWNER_PREF_KEY, enabled ? '1' : '0'); } catch (_) {}
+  }
+
+  function wantsOwnerRestore() {
+    try { return localStorage.getItem(OWNER_PREF_KEY) === '1'; } catch (_) { return false; }
+  }
 
   function applyOwnerVisibility() {
     document.body.classList.toggle('owner-unlocked', ownerMode);
@@ -324,15 +346,54 @@
     if (state) state.textContent = ownerMode ? 'OWNER MODE' : 'LOCKED';
   }
 
+  async function restoreOwnerModeFast() {
+    if (!cloudEnabled || !supabaseClient || !wantsOwnerRestore()) return false;
+    try {
+      const { data: authData } = await supabaseClient.auth.getSession();
+      const session = authData?.session || null;
+      if (!session?.user) return false;
+      cloudSession = session;
+      let verifiedUid = '';
+      try { verifiedUid = String(localStorage.getItem(VERIFIED_OWNER_UID_KEY) || ''); } catch (_) {}
+      if (verifiedUid && verifiedUid === String(session.user.id)) {
+        // Optimistic UI restore from a previously verified owner session.
+        ownerMode = true;
+        cloudOwner = true;
+        applyOwnerVisibility();
+        // Re-verify the owner UID in the background; RLS remains the real data guard.
+        loadOwnerSession().then(() => {
+          if (!cloudOwner || !cloudSession) { ownerMode = false; rememberOwnerPreference(false); applyOwnerVisibility(); }
+        }).catch(() => {});
+        return true;
+      }
+      await loadOwnerSession();
+      if (cloudOwner && cloudSession) {
+        ownerMode = true;
+        applyOwnerVisibility();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   async function unlockOwner() {
-    await ensureSupabaseClient();
+    if (ownerWarmup) await ownerWarmup;
+    if (ownerMode && cloudOwner && cloudSession) return true;
     if (!cloudEnabled || !supabaseClient) {
       const attempt = prompt('OWNER ACCESS\nEnter your private owner code:');
-      if (attempt === OWNER_PIN) { ownerMode = true; try { sessionStorage.setItem('lucian-vex-owner', '1'); } catch (_) {} applyOwnerVisibility(); showToast('Owner mode unlocked'); return true; }
+      if (attempt === OWNER_PIN) { ownerMode = true; rememberOwnerPreference(true); applyOwnerVisibility(); showToast('Owner mode unlocked'); return true; }
       if (attempt !== null) showToast('Access denied');
       return false;
     }
-    if (cloudOwner && cloudSession) { ownerMode = true; await loadCloudForOwner(); applyOwnerVisibility(); showToast('Owner mode unlocked'); return true; }
+    if (cloudOwner && cloudSession) {
+      ownerMode = true;
+      rememberOwnerPreference(true);
+      applyOwnerVisibility();
+      // Cloud state is already being reconciled in the background; don't block the UI.
+      loadCloudForOwner().then(() => { buildArchiveIndex(); renderCurrentPage(); }).catch(() => {});
+      showToast('Owner mode unlocked');
+      return true;
+    }
     openModal(`<p class="eyebrow">SECURE OWNER ACCESS</p><h2 id="modal-title">Lucian Vex Cloud Login</h2><p class="muted-note">This replaces the old local PIN with a real account. Your website edits are stored in the shared cloud database.</p><div class="form-field"><label>EMAIL</label><input id="cloud-email" type="email" autocomplete="email" placeholder="you@example.com"></div><div class="form-field"><label>PASSWORD</label><input id="cloud-password" type="password" autocomplete="current-password" placeholder="Your password"></div><div class="form-grid two"><button class="btn primary form-submit" id="cloud-login" type="button">SIGN IN</button><button class="btn ghost form-submit" id="cloud-signup" type="button">CREATE ACCOUNT</button></div><p class="muted-note">Create the owner account once in Supabase, then use SIGN IN here.</p>`);
     const doLogin = async (signup=false) => {
       const email = $('#cloud-email').value.trim(); const password = $('#cloud-password').value;
@@ -343,7 +404,8 @@
       if (!cloudSession) { closeModal(); showToast('Account created — check your email if confirmation is enabled'); return; }
       await loadOwnerSession();
       if (!cloudOwner) { await supabaseClient.auth.signOut(); cloudSession = null; closeModal(); showToast('This account is not the Lucian Vex owner'); return; }
-      ownerMode = true; await loadCloudForOwner(); closeModal(); applyOwnerVisibility(); showToast('Owner mode unlocked');
+      ownerMode = true; rememberOwnerPreference(true); closeModal(); applyOwnerVisibility(); showToast('Owner mode unlocked');
+      loadCloudForOwner().then(() => { buildArchiveIndex(); renderCurrentPage(); }).catch(() => {});
     };
     $('#cloud-login').addEventListener('click', () => doLogin(false));
     $('#cloud-signup').addEventListener('click', () => doLogin(true));
@@ -352,8 +414,9 @@
 
   async function lockOwner() {
     ownerMode = false;
-    if (cloudEnabled && cloudSession) { try { await supabaseClient.auth.signOut(); } catch (_) {} cloudSession = null; cloudOwner = false; }
-    try { sessionStorage.removeItem('lucian-vex-owner'); } catch (_) {}
+    rememberOwnerPreference(false);
+    // Keep the authenticated session alive so re-enabling owner mode is instant.
+    // Real protection remains Supabase Auth + the database RLS policies.
     applyOwnerVisibility();
     closeModal();
     showToast('Owner mode locked');
@@ -431,8 +494,13 @@
     // archive here: that can be extremely expensive once many posters exist.
     buildArchiveIndex();
     renderedIndexVersion = archiveIndexVersion;
-    // Paint first. The large local draft serialization happens after the current interaction.
-    setTimeout(persistLocalDraft, 0);
+    // Keep a durable local draft. For normal-sized archives this is immediate; for very large
+    // archives it is deferred so the UI never freezes. The cloud writer remains authoritative.
+    try {
+      const roughSize = JSON.stringify(data).length;
+      if (roughSize < 350000) persistLocalDraft();
+      else setTimeout(persistLocalDraft, 0);
+    } catch (_) { setTimeout(persistLocalDraft, 0); }
     // The local state is the source of truth for the current interaction.
     // Rendering never waits for a network round-trip.
     renderCurrentPage();
@@ -1739,16 +1807,12 @@
   $('#anime-page-search')?.addEventListener('input', e => { animeSearchQuery=e.target.value.trim().toLowerCase(); animeVisibleLimit=ANIME_PAGE_SIZE; cancelAnimationFrame(filterFrame); filterFrame=requestAnimationFrame(()=>renderAnime(false)); });
   $('#theme-page-open')?.addEventListener('click', openThemeManager);
   applyLiveWallpaper();
+  // Native anchors handle navigation. The CSS makes the whole padded nav item the hit area.
   $$('#nav a').forEach(link => {
     link.addEventListener('click', () => $('#nav')?.classList.remove('open'));
-    link.addEventListener('pointerdown', event => {
-      if (event.button !== 0) return;
-      const href = link.getAttribute('href');
-      if (href) { event.preventDefault(); window.location.assign(href); }
-    });
   });
 
-  // Paint immediately from bundled/cache data. Cloud reconciliation happens in the background.
+  // Paint immediately from the fastest available local source. Cloud reconciliation runs in parallel.
   loadTheme();
   renderAll();
   renderDiscordProfile();
@@ -1756,8 +1820,25 @@
   applyOwnerVisibility();
   setupReveal();
 
-  // Cloud reads use Supabase REST directly. The heavier Supabase JS client is loaded
-  // only when Owner Mode is actually requested, keeping public navigation responsive.
+  // Prewarm auth immediately. This removes the slow first-login/import wait while preserving
+  // persistent Supabase sessions across every page and refresh.
+  ownerWarmup = (async () => {
+    try {
+      await ensureSupabaseClient();
+      if (!cloudEnabled || !supabaseClient) return;
+      await restoreOwnerModeFast();
+      if (cloudOwner && cloudSession && ownerMode) {
+        // Don't make page navigation wait for owner data; reconcile it in the background.
+        loadCloudForOwner().then(() => {
+          buildArchiveIndex();
+          renderCurrentPage();
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  })();
+
+  // Cloud reads use Supabase REST directly for public visitors. One request hydrates the complete
+  // published document; no extra timestamp request and no multi-second idle delay.
   const refreshPublicData = async () => {
     if (!SUPABASE_URL || !SUPABASE_KEY || ownerMode) return;
     try {
@@ -1782,13 +1863,40 @@
     } catch (_) {}
   };
 
-  // Let the browser paint and become interactive first. Reconcile cloud data in idle time.
-  const idleRefresh = () => refreshPublicData();
-  if ('requestIdleCallback' in window) {
-    requestIdleCallback(idleRefresh, { timeout: 3500 });
-  } else {
-    setTimeout(idleRefresh, 2500);
+  function dataCandidateFrom(value) {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value === 'string') {
+      try { const parsed = JSON.parse(value); return parsed && typeof parsed === 'object' ? parsed : null; } catch (_) {}
+    }
+    return null;
   }
+
+  async function hydrateLocalFileFallback() {
+    if (dataHydrated || dataHydrationRunning) return;
+    dataHydrationRunning = true;
+    try {
+      const response = await fetch('data.json', { cache: 'force-cache' });
+      if (response.ok) {
+        const json = await response.json();
+        const candidate = normalizeData(dataCandidateFrom(json) || {});
+        if (dataHealthScore(candidate) > dataHealthScore(data)) {
+          data = candidate;
+          dataHydrated = true;
+          try { localStorage.setItem(PUBLISHED_CACHE_KEY, JSON.stringify(candidate)); } catch (_) {}
+          buildArchiveIndex();
+          renderedIndexVersion = archiveIndexVersion;
+          renderCurrentPage();
+        }
+      }
+    } catch (_) {}
+    finally { dataHydrationRunning = false; }
+  }
+
+  // Hydrate cloud data immediately, but never block the first paint. A populated local archive
+  // stays visible until the remote document has been validated.
+  hydrateLocalFileFallback();
+  refreshPublicData();
 
   // Keep other devices in sync without loading the full realtime client for every visitor.
   setInterval(() => {

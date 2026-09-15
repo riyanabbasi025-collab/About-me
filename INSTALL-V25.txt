@@ -1,0 +1,9 @@
+LUCIAN VEX V25
+
+1. Make a backup copy of your current About-me repository folder.
+2. Extract/merge this package into the existing repository. Delete nothing.
+3. Keep your existing data.js, supabase-config.js, images/ folder, posters, and any other personal files.
+4. Open GitHub Desktop and inspect the Changes list before Commit/Push.
+5. Commit and Push origin. Netlify will deploy from the connected repository.
+
+V25 focuses on archive recovery, persistent owner mode, universal navigation hit areas, and safer/faster data hydration.
