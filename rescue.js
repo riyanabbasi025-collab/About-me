@@ -130,5 +130,5 @@
   function boot(){ if(shouldRecover()) recover(); else { applySimpleWallpaper(); } }
   addEventListener('error',()=>setTimeout(()=>{ if(shouldRecover()) recover(); },50));
   addEventListener('unhandledrejection',()=>setTimeout(()=>{ if(shouldRecover()) recover(); },50));
-  if(document.readyState==='loading') addEventListener('DOMContentLoaded',()=>setTimeout(boot,700),{once:true}); else setTimeout(boot,700);
+  if(document.readyState==='loading') addEventListener('DOMContentLoaded',()=>setTimeout(boot,120),{once:true}); else setTimeout(boot,120);
 })();

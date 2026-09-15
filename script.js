@@ -60,6 +60,19 @@
   function healthiestData(...candidates) {
     return clone(candidates.filter(Boolean).reduce((best, candidate) => dataHealthScore(candidate) > dataHealthScore(best) ? candidate : best, {}));
   }
+
+
+
+  const BUILTIN_CATEGORIES = [
+    { id: 'favorite', label: 'MY FAVORITES', builtin: true },
+    { id: 'rotation', label: 'IN ROTATION', builtin: true },
+    { id: 'want', label: 'WANT TO PLAY', builtin: true },
+    { id: 'completed', label: 'COMPLETED', builtin: true },
+    { id: 'watching', label: 'WATCHING', builtin: true },
+    { id: 'planning', label: 'PLANNING', builtin: true },
+    { id: 'paused', label: 'PAUSED', builtin: true },
+    { id: 'dropped', label: 'DROPPED', builtin: true }
+  ];
   // Deterministic first paint: data.js is the trusted local bootstrap source.
   // Never let an old/empty localStorage or remote document replace a populated archive.
   const bundledData = dataCandidateFrom(window.LUCIAN_DATA) || {};
@@ -134,18 +147,6 @@
     } catch (error) { console.error(error); showToast('Cloud data could not be loaded'); }
     return false;
   }
-
-
-  const BUILTIN_CATEGORIES = [
-    { id: 'favorite', label: 'MY FAVORITES', builtin: true },
-    { id: 'rotation', label: 'IN ROTATION', builtin: true },
-    { id: 'want', label: 'WANT TO PLAY', builtin: true },
-    { id: 'completed', label: 'COMPLETED', builtin: true },
-    { id: 'watching', label: 'WATCHING', builtin: true },
-    { id: 'planning', label: 'PLANNING', builtin: true },
-    { id: 'paused', label: 'PAUSED', builtin: true },
-    { id: 'dropped', label: 'DROPPED', builtin: true }
-  ];
 
   function slugCategory(value) {
     return String(value || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 42);
@@ -1756,6 +1757,7 @@
     if (!window.matchMedia('(pointer: fine)').matches) return;
     const core = $('#cursor-core'), ring = $('#cursor-ring'), trail = $('#cursor-trail');
     if (!core || !ring || !trail) return;
+    document.body.classList.add('cursor-enhanced');
     let x = innerWidth / 2, y = innerHeight / 2, rx = x, ry = y, raf = 0, lastMove = 0;
     const tick = now => {
       rx += (x - rx) * .24;

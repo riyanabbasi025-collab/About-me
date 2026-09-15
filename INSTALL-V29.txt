@@ -1,0 +1,3 @@
+Lucian Vex V29 Stability
+
+Merge files into the existing repository. Delete nothing. Keep data.js, supabase-config.js, images/, and all personal media. V29 fixes the blank screen caused by an initialization order error, makes content visible even on JS failure, and protects the native cursor until the custom cursor initializes.

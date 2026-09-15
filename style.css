@@ -38,7 +38,7 @@
 .discord-setup{right:20px;bottom:20px;opacity:0}.discord-card:hover .discord-setup,.discord-card:focus-within .discord-setup{opacity:1}.discord-decoration{width:108px;height:108px;inset:-8px}.discord-decoration.visible{filter:drop-shadow(0 0 9px rgba(255,43,181,.32))}
 
 /* soft entrance motion for every major content block */
-.reveal,.panel,.card,.discord-card,.contact-box{opacity:0;transform:translateY(28px) scale(.985);transition:opacity .72s cubic-bezier(.2,.7,.2,1),transform .72s cubic-bezier(.2,.7,.2,1),border-color .25s ease,box-shadow .3s ease;transition-delay:var(--reveal-delay,0ms)}
+.reveal,.panel,.card,.discord-card,.contact-box{opacity:1;transform:none;transition:opacity .25s ease,transform .25s ease,border-color .2s ease,box-shadow .2s ease;transition-delay:0ms}
 .reveal-left{transform:translateX(-34px)}.reveal-right{transform:translateX(34px)}.reveal.is-visible,.is-visible,.panel.is-visible,.card.is-visible,.discord-card.is-visible,.contact-box.is-visible{opacity:1;transform:none}
 .cards-grid .card:nth-child(2){--reveal-delay:70ms}.cards-grid .card:nth-child(3){--reveal-delay:140ms}.cards-grid .card:nth-child(4){--reveal-delay:210ms}.cards-grid .card:nth-child(5){--reveal-delay:280ms}.cards-grid .card:nth-child(6){--reveal-delay:350ms}
 .card:hover,.panel:hover,.discord-card:hover{transform:translateY(-5px);border-color:color-mix(in srgb,var(--pink) 34%,var(--line));box-shadow:0 24px 70px rgba(0,0,0,.38),0 0 30px color-mix(in srgb,var(--pink) 8%,transparent)}
@@ -52,7 +52,7 @@
 
 /* cyber cursor — desktop only */
 .cursor-core,.cursor-ring,.cursor-trail{position:fixed;top:0;left:0;pointer-events:none;z-index:9999;opacity:0;transition:opacity .2s ease;will-change:transform}.cursor-core{width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;background:var(--pink2);box-shadow:0 0 12px var(--pink),0 0 25px color-mix(in srgb,var(--purple) 75%,transparent)}.cursor-ring{width:30px;height:30px;margin:-15px 0 0 -15px;border:1px solid color-mix(in srgb,var(--pink) 58%,white 20%);border-radius:50%;box-shadow:0 0 18px color-mix(in srgb,var(--pink) 14%,transparent)}.cursor-ring:before,.cursor-ring:after{content:"";position:absolute;background:var(--purple2);opacity:.9}.cursor-ring:before{width:5px;height:1px;top:-1px;left:12px}.cursor-ring:after{width:1px;height:5px;top:12px;left:-1px}.cursor-trail{width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;border:1px solid color-mix(in srgb,var(--purple) 70%,transparent);filter:blur(.2px);}.cursor-active .cursor-core,.cursor-active .cursor-ring,.cursor-active .cursor-trail{opacity:1}.cursor-hover .cursor-ring{width:42px;height:42px;margin:-21px 0 0 -21px;border-color:var(--pink2);background:color-mix(in srgb,var(--pink) 7%,transparent)}
-@media (pointer:fine){body,button,a{cursor:none}}
+@media (pointer:fine){body.cursor-enhanced,body.cursor-enhanced button,body.cursor-enhanced a{cursor:none}}
 @media (pointer:coarse){.cursor-core,.cursor-ring,.cursor-trail{display:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.001ms!important}.reveal,.panel,.card,.discord-card,.contact-box{opacity:1;transform:none}}
 @media(max-width:560px){.discord-card{width:100%;min-height:470px}.discord-banner{height:108px}.discord-avatar{width:84px;height:84px}.discord-profile{margin-top:-35px}.discord-identity strong{font-size:18px}.discord-decoration{width:98px;height:98px}.cursor-core,.cursor-ring,.cursor-trail{display:none}}
@@ -226,3 +226,7 @@ body.owner-unlocked nav a.owner-only{display:flex!important}
 .archive-card img{content-visibility:auto}
 button,a{touch-action:manipulation}
 @media(max-width:1100px){.topbar nav{gap:2px}.topbar nav a{padding:0 10px;font-size:9px}}
+
+/* V29 stability: full nav hit areas + visible fallback cursor/content */
+#nav a{display:inline-flex;align-items:center;padding:9px 7px;margin:-9px 0;text-decoration:none}
+@media(max-width:900px){#nav a{padding:10px 12px;margin:0;width:100%}}
