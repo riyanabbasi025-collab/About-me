@@ -1,0 +1,36 @@
+LUCIAN VEX V24 — ARCHIVE RECOVERY + ULTRA FAST INTERACTIONS
+
+This update is intentionally migration-safe.
+It contains SITE CODE ONLY and does NOT contain the owner's data.js, supabase-config.js, images/, or personal media library.
+
+MERGE THESE FILES INTO THE EXISTING REPOSITORY:
+- index.html
+- about.html
+- skills.html
+- gaming.html
+- anime.html
+- network.html
+- contact.html
+- theme.html
+- script.js
+- style.css
+- netlify.toml
+- netlify/functions/steam-search.js
+
+KEEP YOUR EXISTING:
+- data.js
+- supabase-config.js
+- images/ and all poster/media folders
+- any other personal files already in the repository
+
+V24 FIXES:
+- Protects populated games/anime from being replaced by an empty/stale cache or empty remote payload.
+- Chooses the healthiest available local data source at startup.
+- Keeps unsynced local drafts marked until cloud confirmation.
+- Uses a persistent cached-card map so filters reuse already-rendered cards and images.
+- Category/search interactions no longer wait for network requests.
+- Faster archive rendering and lighter visual effects.
+- Navigation links have a full clickable target, not text-only hitboxes.
+- Steam search: JSON endpoint -> robust Steam HTML parser -> CheapShark fallback.
+- CheapShark can also be used directly from the browser if the Netlify function is unavailable.
+- Steam import remains manual-safe for games not found by providers.

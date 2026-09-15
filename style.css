@@ -194,3 +194,12 @@ body{isolation:isolate}
 /* V23 archive performance: keep each card's layout/paint work isolated. */
 .archive-card{contain:layout paint;content-visibility:auto;contain-intrinsic-size:360px 520px}
 @media (prefers-reduced-motion:reduce){.live-wallpaper-layer,.wallpaper-stage-glow{animation:none!important}.btn,.filter,.wallpaper-mode{transition:none!important}}
+
+/* V24 interaction + navigation performance */
+nav{gap:8px;align-items:center}
+nav a{display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:0 9px;border-radius:8px;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
+nav a:hover,nav a.active{background:rgba(255,255,255,.035)}
+.archive-card{content-visibility:auto;contain:layout paint style;contain-intrinsic-size:320px 500px}
+.archive-card .source-badge{backdrop-filter:none}
+.filter,.details-btn,.icon-btn,.btn,.theme-btn,.wallpaper-mode{transition:background-color .12s,border-color .12s,color .12s,opacity .12s,transform .12s}
+@media(max-width:900px){nav.open a{width:100%;justify-content:flex-start;min-height:42px;padding:0 12px}}
