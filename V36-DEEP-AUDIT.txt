@@ -1,0 +1,24 @@
+LUCIAN VEX // V36 DEEP STABILIZATION AUDIT
+
+Scope: runtime-safe fixes only. Existing archive/data.js, supabase-config.js and images/ are intentionally excluded.
+
+Checks performed:
+- Node syntax check on script.js and sw.js
+- HTML duplicate-id and script-order inspection for all 8 pages
+- Supabase read/write path audit against security-hardening.sql
+- service-worker route/cache audit
+- URL/image/video input validation audit
+- local-first / IndexedDB cache error-path audit
+- Owner Mode persistence path audit
+
+Verified architectural constraints:
+- Public data reads use lucian_site_public
+- Owner verification uses lucian_is_owner()
+- Owner writes remain against lucian_site_data and rely on RLS
+- data.js, supabase-config.js and images/ must be preserved
+- no public account creation is introduced
+
+Known intentionally deferred scalability work:
+- Move icon/media blobs to Supabase Storage
+- Split giant archive JSON into normalized tables/delta updates
+- Build a dedicated search index for very large archives

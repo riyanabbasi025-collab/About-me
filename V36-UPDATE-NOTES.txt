@@ -1,0 +1,31 @@
+LUCIAN VEX V36.1 — TARGETED SAFETY UPDATE
+
+This update is intentionally narrow. It preserves V35 behavior and only fixes verified issues:
+
+1. Supabase owner reads now use lucian_site_public instead of direct lucian_site_data reads.
+   - Compatible with security-hardening.sql, which revokes direct SELECT on lucian_site_data.
+   - Owner verification relies only on lucian_is_owner().
+
+2. THEME was removed from the main navigation because THEME already exists in the utility controls.
+   - The Theme page and Theme button are unchanged.
+
+3. Icon Manager now gives Navigation/System targets the correct default icon preview.
+   - Removed the orphaned nav:theme manager target.
+   - Existing saved icon overrides are not deleted.
+
+4. Cache version bumped from V35 to V36.1 so GitHub Pages browsers/service workers can pick up the new build.
+
+IMPORTANT:
+- Do NOT delete or replace data.js, supabase-config.js, or images/.
+- Merge these files over the existing site files.
+- No new database tables are introduced.
+- If V35 security-hardening.sql was already run successfully, no new SQL is required for this update.
+
+
+DEEP STABILIZATION PASS
+- Fixed an IndexedDB readonly transaction error path that could throw after cache failures.
+- Cache DB version bumped so older malformed cache state is bypassed cleanly.
+- Local-first selection now preserves a local archive containing only network links.
+- Image/video URLs are validated before rendering or persisting; data: image/video uploads remain supported.
+- Service worker cloud cache now follows the public view used by the V36.1 frontend.
+- Security SQL now explicitly blocks authenticated insert/delete and adds an owner-only update RLS policy.

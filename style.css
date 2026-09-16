@@ -188,3 +188,20 @@ body{isolation:isolate}
 .item-icon { width:18px; height:18px; margin-right:6px; vertical-align:-3px; color:var(--pink2); }
 .filter-icon { width:14px; height:14px; color:var(--pink2); }
 .icon-manager-list{display:grid;gap:12px;max-height:58vh;overflow:auto;padding-right:4px}.icon-group{border:1px solid var(--line);border-radius:14px;padding:11px;background:rgba(255,255,255,.02)}.icon-group-head{display:flex;justify-content:space-between;align-items:center;font-size:8px;letter-spacing:1.6px;color:var(--muted);padding:0 2px 8px}.icon-group-head b{color:var(--purple2)}.icon-manager-row{display:grid;grid-template-columns:38px minmax(120px,1fr) minmax(160px,1.2fr) auto auto;gap:8px;align-items:center;padding:8px 0;border-top:1px solid rgba(255,255,255,.05)}.icon-manager-row:first-of-type{border-top:0}.icon-manager-preview{width:34px;height:34px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.025);display:grid;place-items:center;color:var(--pink2)}.icon-manager-preview img{width:24px;height:24px;object-fit:contain}.icon-manager-name{display:flex;flex-direction:column;gap:3px;min-width:0}.icon-manager-name strong{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.icon-manager-name small{font-size:7px;color:var(--muted);letter-spacing:.8px}.icon-manager-row input[type=url]{width:100%;min-width:0;background:#0d0a13;border:1px solid var(--line);color:var(--white);padding:9px 10px;border-radius:9px;font-size:8px}.icon-upload-label{position:relative;white-space:nowrap;cursor:pointer}.icon-upload-label input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}.icon-manager-row .btn.small{padding:8px 9px;font-size:7px;white-space:nowrap}@media(max-width:900px){.icon-manager-row{grid-template-columns:38px minmax(120px,1fr) auto auto}.icon-manager-row input[type=url]{grid-column:2/-1}.icon-manager-row .icon-upload-label{grid-column:3}.icon-manager-row [data-icon-clear]{grid-column:4}}
+
+/* V35 CLEAN UNIVERSAL NAV + ICON UX */
+.topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:22px;align-items:center;padding:10px 5.5%;min-height:64px}
+.topbar .brand{min-width:max-content}
+.topbar nav#nav{display:flex;justify-content:center;align-items:center;gap:4px;min-width:0;position:static;top:auto}
+.topbar nav#nav a{min-height:40px;padding:0 11px;border-radius:9px;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.topbar nav#nav a.active{background:rgba(255,255,255,.045);box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);color:var(--white)}
+.topbar-actions{justify-self:end;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.utility-btn{min-width:42px;padding:8px 10px}
+.menu-btn{display:none}
+.owner-only[hidden]{display:none!important}
+.icon-manager-preview{overflow:hidden}
+.icon-manager-preview img{max-width:24px;max-height:24px}
+.file-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.file-row>input[type=url]{flex:1;min-width:180px}
+@media(max-width:1180px){.topbar{grid-template-columns:auto 1fr auto;gap:12px}.topbar nav#nav{gap:0}.topbar nav#nav a{padding:0 8px;font-size:9px;letter-spacing:1.25px}.topbar-actions{gap:5px}.utility-btn{padding:8px 8px;font-size:8px}}
+@media(max-width:900px){.topbar{grid-template-columns:auto auto;justify-content:space-between}.topbar nav#nav{display:none}.topbar nav#nav.open{display:flex;position:absolute;top:64px;left:0;right:0;z-index:1100;flex-direction:column;align-items:stretch;gap:4px;padding:10px 5.5%;background:rgba(7,6,11,.98);border-bottom:1px solid var(--line);backdrop-filter:blur(18px)}.topbar nav#nav.open a{justify-content:flex-start;min-height:44px;padding:0 12px}.menu-btn{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0}.utility-btn{padding:8px 9px}.topbar-actions{justify-self:end}}
+@media(max-width:620px){.topbar{padding:9px 4%;gap:8px}.brand span:last-child{font-size:11px}.topbar-actions .utility-btn{font-size:0;width:36px;height:36px;padding:0}.topbar-actions .utility-btn>span:first-child{font-size:15px}.topbar nav#nav.open{top:58px;padding:8px 4%}}
